@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "step-counte",
-    "slug": "step-counte",
+    "slug": "step-counter",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
@@ -17,7 +17,11 @@
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
+      "permissions": [
+        "android.permission.ACTIVITY_RECOGNITION"
+      ],
+      "predictiveBackGestureEnabled": false,
+      "package": "com.beddhant.stepcounter"
     },
     "web": {
       "output": "static",
@@ -37,6 +41,13 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "11aa1018-f828-4d1d-9aa2-2d518357a390"
+      }
+    },
+    "owner": "beddhant"
   }
 }

@@ -1,0 +1,37 @@
+example/src/app/_layout.tsx(5,39): error TS2307: Cannot find module '@/components/animated-icon' or its corresponding type declarations.
+example/src/app/_layout.tsx(6,21): error TS2307: Cannot find module '@/components/app-tabs' or its corresponding type declarations.
+example/src/app/explore.tsx(6,30): error TS2307: Cannot find module '@/components/external-link' or its corresponding type declarations.
+example/src/app/explore.tsx(7,28): error TS2307: Cannot find module '@/components/themed-text' or its corresponding type declarations.
+example/src/app/explore.tsx(8,28): error TS2307: Cannot find module '@/components/themed-view' or its corresponding type declarations.
+example/src/app/explore.tsx(9,29): error TS2307: Cannot find module '@/components/ui/collapsible' or its corresponding type declarations.
+example/src/app/explore.tsx(10,26): error TS2307: Cannot find module '@/components/web-badge' or its corresponding type declarations.
+example/src/app/explore.tsx(11,10): error TS2305: Module '"@/constants/theme"' has no exported member 'BottomTabInset'.
+example/src/app/explore.tsx(11,26): error TS2305: Module '"@/constants/theme"' has no exported member 'MaxContentWidth'.
+example/src/app/explore.tsx(11,43): error TS2724: '"@/constants/theme"' has no exported member named 'Spacing'. Did you mean 'SPACING'?
+example/src/app/explore.tsx(12,26): error TS2307: Cannot find module '@/hooks/use-theme' or its corresponding type declarations.
+example/src/app/index.tsx(5,30): error TS2307: Cannot find module '@/components/animated-icon' or its corresponding type declarations.
+example/src/app/index.tsx(6,25): error TS2307: Cannot find module '@/components/hint-row' or its corresponding type declarations.
+example/src/app/index.tsx(7,28): error TS2307: Cannot find module '@/components/themed-text' or its corresponding type declarations.
+example/src/app/index.tsx(8,28): error TS2307: Cannot find module '@/components/themed-view' or its corresponding type declarations.
+example/src/app/index.tsx(9,26): error TS2307: Cannot find module '@/components/web-badge' or its corresponding type declarations.
+example/src/app/index.tsx(10,10): error TS2305: Module '"@/constants/theme"' has no exported member 'BottomTabInset'.
+example/src/app/index.tsx(10,26): error TS2305: Module '"@/constants/theme"' has no exported member 'MaxContentWidth'.
+example/src/app/index.tsx(10,43): error TS2724: '"@/constants/theme"' has no exported member named 'Spacing'. Did you mean 'SPACING'?
+example/src/components/app-tabs.tsx(4,10): error TS2724: '"@/constants/theme"' has no exported member named 'Colors'. Did you mean 'COLORS'?
+example/src/components/app-tabs.web.tsx(16,10): error TS2724: '"@/constants/theme"' has no exported member named 'Colors'. Did you mean 'COLORS'?
+example/src/components/app-tabs.web.tsx(16,18): error TS2305: Module '"@/constants/theme"' has no exported member 'MaxContentWidth'.
+example/src/components/app-tabs.web.tsx(16,35): error TS2724: '"@/constants/theme"' has no exported member named 'Spacing'. Did you mean 'SPACING'?
+example/src/components/app-tabs.web.tsx(27,38): error TS2322: Type '"/explore"' is not assignable to type 'RelativePathString | ExternalPathString | "/" | `/?${string}` | `/#${string}` | "/_sitemap" | `/_sitemap?${string}` | `/_sitemap#${string}` | "/(tabs)" | "/(tabs)/health" | ... 31 more ... | undefined'.
+example/src/components/hint-row.tsx(7,10): error TS2724: '"@/constants/theme"' has no exported member named 'Spacing'. Did you mean 'SPACING'?
+example/src/components/themed-text.tsx(3,10): error TS2724: '"@/constants/theme"' has no exported member named 'Fonts'. Did you mean 'FONTS'?
+example/src/components/themed-text.tsx(3,17): error TS2305: Module '"@/constants/theme"' has no exported member 'ThemeColor'.
+example/src/components/themed-text.tsx(4,26): error TS2307: Cannot find module '@/hooks/use-theme' or its corresponding type declarations.
+example/src/components/themed-view.tsx(3,10): error TS2305: Module '"@/constants/theme"' has no exported member 'ThemeColor'.
+example/src/components/themed-view.tsx(4,26): error TS2307: Cannot find module '@/hooks/use-theme' or its corresponding type declarations.
+example/src/components/ui/collapsible.tsx(6,28): error TS2307: Cannot find module '@/components/themed-text' or its corresponding type declarations.
+example/src/components/ui/collapsible.tsx(7,28): error TS2307: Cannot find module '@/components/themed-view' or its corresponding type declarations.
+example/src/components/ui/collapsible.tsx(8,10): error TS2724: '"@/constants/theme"' has no exported member named 'Spacing'. Did you mean 'SPACING'?
+example/src/components/ui/collapsible.tsx(9,26): error TS2307: Cannot find module '@/hooks/use-theme' or its corresponding type declarations.
+example/src/components/web-badge.tsx(8,10): error TS2724: '"@/constants/theme"' has no exported member named 'Spacing'. Did you mean 'SPACING'?
+example/src/hooks/use-theme.ts(6,10): error TS2724: '"@/constants/theme"' has no exported member named 'Colors'. Did you mean 'COLORS'?
+example/src/hooks/use-theme.ts(7,32): error TS2307: Cannot find module '@/hooks/use-color-scheme' or its corresponding type declarations.
