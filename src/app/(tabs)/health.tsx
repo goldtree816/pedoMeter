@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import Svg, { Polyline, Circle, Defs, LinearGradient, Stop, Polygon, Text as SvgText } from 'react-native-svg';
 import {
   View,
   Text,
@@ -7,138 +8,224 @@ import {
   TouchableOpacity,
   Dimensions,
   Alert,
+  Modal,
+  TextInput,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { COLORS, SPACING } from '../../constants/theme';
-import { useSettings } from '../../context/SettingsContext';
+import { useSettings, WeightRecord } from '../../context/SettingsContext';
 
 const { width } = Dimensions.get('window');
 const GRAPH_WIDTH = width - 48 - 32; // screen - horizontal padding - card padding
 
-// ─── weight mock history (last 30 days) ──────────────────────────────────────
-// We'll build 5 data points from Jun 13 → Jul 11
-const WEIGHT_HISTORY = [
-  { label: 'Jun 13', weight: 155.1 },
-  { label: 'Jun 20', weight: 154.8 },
-  { label: 'Jun 27', weight: 154.6 },
-  { label: 'Jul 4', weight: 154.4 },
-  { label: 'Jul 11', weight: 154.3 },
-];
-
 // ─── BMI color bar segments ───────────────────────────────────────────────────
 const BMI_SEGMENTS = [
-  { color: '#90A4AE', label: 'Under', max: 18.5 },   // gray
-  { color: '#66BB6A', label: 'Normal', max: 25 },     // green
-  { color: '#D4E157', label: 'Over', max: 30 },       // lime-yellow
-  { color: '#FFA726', label: 'Obese I', max: 35 },    // orange
-  { color: '#EF5350', label: 'Obese II', max: 40 },   // red
+  { color: '#90A4AE', label: 'Underweight', max: 18.5 },
+  { color: '#66BB6A', label: 'Healthy weight', max: 25 },
+  { color: '#D4E157', label: 'Overweight', max: 30 },
+  { color: '#FFA726', label: 'Above Healthy Weight', max: 35 },
+  { color: '#EF5350', label: 'Obese', max: 40 },
 ];
 
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+function getBmiInfo(bmi: number): { label: string; color: string } {
+  if (bmi < 18.5) return { label: 'Underweight', color: '#90A4AE' };
+  if (bmi < 25)   return { label: 'Healthy weight', color: '#66BB6A' };
+  if (bmi < 30)   return { label: 'Overweight', color: '#D4E157' };
+  if (bmi < 35)   return { label: 'Above Healthy Weight', color: '#FFA726' };
+  return { label: 'Obese', color: '#EF5350' };
+}
+
+function formatDate(isoDate: string): string {
+  const d = new Date(isoDate + 'T00:00:00');
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
 // ─── Weight line graph ────────────────────────────────────────────────────────
-function WeightGraph({ currentWeight }: { currentWeight: number }) {
-  const minW = Math.min(...WEIGHT_HISTORY.map((d) => d.weight)) - 1;
-  const maxW = Math.max(...WEIGHT_HISTORY.map((d) => d.weight)) + 1;
-  const graphH = 120;
-  const pointCount = WEIGHT_HISTORY.length;
-  const stepX = GRAPH_WIDTH / (pointCount - 1);
+function WeightGraph({
+  history,
+  unit,
+  currentWeight,
+}: {
+  history: WeightRecord[];
+  unit: 'kg' | 'lbs';
+  currentWeight: number;
+}) {
+  const toDisplay = (kg: number) => (unit === 'lbs' ? kg * 2.20462 : kg);
 
-  const toY = (w: number) => graphH - ((w - minW) / (maxW - minW)) * graphH;
+  // ── Fixed 30-day window ───────────────────────────────────────────────────
+  const Y_AXIS_WIDTH = 42;
+  const graphW = GRAPH_WIDTH - Y_AXIS_WIDTH;
+  const graphH = 200;
+  const PAD_TOP = 16;
+  const PAD_BOTTOM = 8;
+  const plotH = graphH - PAD_TOP - PAD_BOTTOM;
 
-  // Generate SVG-like path using Views for RN
-  const points = WEIGHT_HISTORY.map((d, i) => ({
-    x: i * stepX,
-    y: toY(d.weight),
-    label: d.label,
-    weight: d.weight,
+  const windowEnd = new Date();
+  windowEnd.setHours(23, 59, 59, 999);
+  const windowStart = new Date(windowEnd);
+  windowStart.setDate(windowStart.getDate() - 29);
+  windowStart.setHours(0, 0, 0, 0);
+  const windowMs = windowEnd.getTime() - windowStart.getTime();
+
+  // Map an ISO date string to an X pixel position
+  const dateToX = (isoDate: string): number => {
+    const d = new Date(isoDate + 'T00:00:00');
+    const ratio = Math.max(0, Math.min(1, (d.getTime() - windowStart.getTime()) / windowMs));
+    return ratio * graphW;
+  };
+
+  // 5 evenly-spaced X-axis labels across the 30-day window
+  const xLabels = Array.from({ length: 5 }, (_, i) => {
+    const d = new Date(windowStart);
+    d.setDate(d.getDate() + Math.round((i / 4) * 29));
+    return {
+      label: d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+      ratio: i / 4,
+    };
+  });
+
+  // Only show entries within the 30-day window
+  const data = history.filter((r) => {
+    const d = new Date(r.date + 'T00:00:00');
+    return d >= windowStart && d <= windowEnd;
+  });
+
+  // ── Y axis ────────────────────────────────────────────────────────────────
+  const baseWeight = toDisplay(currentWeight);
+  const allWeights = data.length > 0 ? data.map((r) => toDisplay(r.weight)) : [baseWeight];
+  const minW = Math.min(...allWeights) - 2;
+  const maxW = Math.max(...allWeights) + 2;
+
+  const toY = (w: number) =>
+    PAD_TOP + plotH - ((w - minW) / (maxW - minW || 1)) * plotH;
+
+  const numYLabels = 6;
+  const yLabels = Array.from({ length: numYLabels }, (_, i) =>
+    Math.round(maxW - (i / (numYLabels - 1)) * (maxW - minW))
+  );
+
+  // ── Build data points ─────────────────────────────────────────────────────
+  let points = data.map((r) => ({
+    x: dateToX(r.date),
+    y: toY(toDisplay(r.weight)),
+    label: formatDate(r.date),
+    weight: toDisplay(r.weight),
   }));
 
-  // Y-axis labels
-  const yLabels = [156, 155, 154, 153, 152];
+  if (points.length === 0) {
+    points = [
+      { x: 0, y: toY(baseWeight), label: '', weight: baseWeight },
+      { x: graphW, y: toY(baseWeight), label: '', weight: baseWeight },
+    ];
+  } else if (points.length === 1) {
+    points = [
+      { x: 0, y: points[0].y, label: '', weight: points[0].weight },
+      { x: graphW, y: points[0].y, label: '', weight: points[0].weight },
+    ];
+  }
+
+  const polylinePoints = points.map((p) => `${p.x},${p.y}`).join(' ');
+  const fillPolygon =
+    points.length >= 2
+      ? points.map((p) => `${p.x},${p.y}`).join(' ') +
+        ` ${points[points.length - 1].x},${graphH} ${points[0].x},${graphH}`
+      : '';
+
+  // Removed complex HTML tooltips in favor of native SVG text
 
   return (
     <View>
-      {/* Y axis + chart area side by side */}
-      <View style={{ flexDirection: 'row' }}>
-        {/* Y axis */}
-        <View style={{ width: 32, height: graphH + 20, justifyContent: 'space-between', paddingTop: 4, paddingBottom: 20 }}>
-          {yLabels.map((v) => (
-            <Text key={v} style={graphStyles.yLabel}>{v}</Text>
+      <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
+        {/* Y-axis labels */}
+        <View
+          style={{
+            width: Y_AXIS_WIDTH,
+            height: graphH,
+            justifyContent: 'space-between',
+            paddingTop: PAD_TOP,
+            paddingBottom: PAD_BOTTOM,
+          }}
+        >
+          {yLabels.map((v, i) => (
+            <Text key={i} style={graphStyles.yLabel}>{v}</Text>
           ))}
         </View>
 
-        {/* Graph area */}
-        <View style={{ flex: 1, height: graphH + 20 }}>
-          {/* Horizontal grid lines */}
-          {yLabels.map((v, idx) => (
-            <View
-              key={v}
-              style={[
-                graphStyles.gridLine,
-                { top: (idx / (yLabels.length - 1)) * graphH },
-              ]}
-            />
-          ))}
+        {/* SVG canvas */}
+        <View style={{ width: graphW, height: graphH, overflow: 'visible' }}>
+          <Svg width={graphW} height={graphH}>
+            <Defs>
+              <LinearGradient id="lineGrad" x1="0" y1="0" x2="0" y2="1">
+                <Stop offset="0" stopColor={COLORS.greenAccent} stopOpacity="0.35" />
+                <Stop offset="1" stopColor={COLORS.greenAccent} stopOpacity="0.02" />
+              </LinearGradient>
+            </Defs>
 
-          {/* Connecting lines between points */}
-          {points.slice(0, -1).map((pt, idx) => {
-            const next = points[idx + 1];
-            const dx = next.x - pt.x;
-            const dy = next.y - pt.y;
-            const len = Math.sqrt(dx * dx + dy * dy);
-            const angle = (Math.atan2(dy, dx) * 180) / Math.PI;
-            return (
-              <View
-                key={idx}
-                style={{
-                  position: 'absolute',
-                  left: pt.x,
-                  top: pt.y,
-                  width: len,
-                  height: 1.5,
-                  backgroundColor: 'rgba(255,255,255,0.25)',
-                  transformOrigin: 'left center',
-                  transform: [{ rotate: `${angle}deg` }],
-                }}
-              />
-            );
-          })}
+            {/* Grid lines */}
+            {yLabels.map((_, idx) => {
+              const gy = PAD_TOP + (idx / (numYLabels - 1)) * plotH;
+              return (
+                <Polyline key={idx} points={`0,${gy} ${graphW},${gy}`}
+                  fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="1" />
+              );
+            })}
 
-          {/* Dots */}
-          {points.map((pt, idx) => {
-            const isLast = idx === points.length - 1;
-            return (
-              <View
-                key={idx}
-                style={{
-                  position: 'absolute',
-                  left: pt.x - (isLast ? 5 : 4),
-                  top: pt.y - (isLast ? 5 : 4),
-                  width: isLast ? 10 : 8,
-                  height: isLast ? 10 : 8,
-                  borderRadius: isLast ? 5 : 4,
-                  backgroundColor: isLast ? COLORS.greenAccent : 'rgba(255,255,255,0.35)',
-                  borderWidth: isLast ? 2 : 0,
-                  borderColor: isLast ? '#fff' : 'transparent',
-                }}
-              />
-            );
-          })}
+            {/* Gradient fill */}
+            {fillPolygon !== '' && <Polygon points={fillPolygon} fill="url(#lineGrad)" />}
+
+            {/* Line */}
+            {points.length >= 2 && (
+              <Polyline points={polylinePoints} fill="none"
+                stroke={COLORS.greenAccent} strokeWidth="2.5"
+                strokeLinejoin="round" strokeLinecap="round" />
+            )}
+
+            {/* Dots and Labels */}
+            {points.map((pt, idx) => {
+              const isFirst = idx === 0;
+              const isLast = idx === points.length - 1;
+              return (
+                <React.Fragment key={idx}>
+                  {(isFirst || isLast) && (
+                    <Circle cx={pt.x} cy={pt.y} r={10} fill="rgba(82,196,130,0.2)" />
+                  )}
+                  <Circle cx={pt.x} cy={pt.y}
+                    r={isFirst || isLast ? 6 : 4}
+                    fill={isFirst || isLast ? COLORS.greenAccent : 'rgba(255,255,255,0.25)'}
+                    stroke="#fff" strokeWidth={isFirst || isLast ? 2 : 1} />
+                  
+                  {/* Weight label for the particular date */}
+                  <SvgText
+                    x={pt.x}
+                    y={pt.y - (isFirst || isLast ? 16 : 12)}
+                    fill={isFirst || isLast ? COLORS.greenAccent : "#FFFFFF"}
+                    fontSize={isFirst || isLast ? "12" : "10"}
+                    fontWeight="bold"
+                    textAnchor="middle"
+                  >
+                    {pt.weight.toFixed(1)}
+                  </SvgText>
+                </React.Fragment>
+              );
+            })}
+          </Svg>
         </View>
       </View>
 
-      {/* X-axis labels */}
-      <View style={{ flexDirection: 'row', paddingLeft: 32 }}>
-        {WEIGHT_HISTORY.map((d, i) => (
-          <Text
-            key={i}
-            style={[
-              graphStyles.xLabel,
-              { flex: 1, textAlign: i === 0 ? 'left' : i === WEIGHT_HISTORY.length - 1 ? 'right' : 'center' },
-            ]}
-          >
-            {d.label}
+      {/* X-axis: 5 evenly-spaced date labels across the 30-day window */}
+      <View style={{ height: 18, marginLeft: Y_AXIS_WIDTH, position: 'relative' }}>
+        {xLabels.map((xl, i) => (
+          <Text key={i}
+            style={[graphStyles.xLabel, {
+              position: 'absolute',
+              left: xl.ratio * graphW - (i === 4 ? 32 : i === 0 ? 0 : 16),
+            }]}>
+            {xl.label}
           </Text>
         ))}
       </View>
@@ -151,42 +238,40 @@ const graphStyles = StyleSheet.create({
     fontSize: 10,
     color: COLORS.textSecondary,
     textAlign: 'right',
-  },
-  gridLine: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    height: 1,
-    backgroundColor: 'rgba(255,255,255,0.08)',
+    paddingRight: 6,
   },
   xLabel: {
     fontSize: 10,
     color: COLORS.textSecondary,
     fontWeight: '600',
   },
+  // Removed tooltip styles as we use SvgText now
+  deltaBadge: { borderRadius: 5, paddingHorizontal: 7, paddingVertical: 2, marginTop: 4 },
+  deltaText: { color: '#fff', fontSize: 11, fontWeight: '900' },
 });
 
 // ─── BMI Color Bar ────────────────────────────────────────────────────────────
 function BmiColorBar({ bmi }: { bmi: number }) {
-  // Clamp indicator position 0..100%
   const clampedBmi = Math.max(10, Math.min(bmi, 45));
   const pct = ((clampedBmi - 10) / 35) * 100;
+  const { label, color } = getBmiInfo(bmi);
 
   return (
     <View>
-      {/* Category label */}
-      {(() => {
-        let label = 'Normal weight';
-        let color = '#66BB6A';
-        if (bmi < 18.5) { label = 'Underweight'; color = '#90A4AE'; }
-        else if (bmi >= 30) { label = 'Obese'; color = '#EF5350'; }
-        else if (bmi >= 25) { label = 'Overweight'; color = '#FFA726'; }
-        return (
-          <View style={[bmiBarStyles.badge, { backgroundColor: color, alignSelf: 'flex-start', marginBottom: 10 }]}>
-            <Text style={bmiBarStyles.badgeText}>{label}</Text>
-          </View>
-        );
-      })()}
+      {/* Badge */}
+      <View
+        style={[
+          bmiBarStyles.badge,
+          {
+            backgroundColor: color,
+            alignSelf: 'flex-start',
+            marginBottom: 10,
+            marginLeft: `${Math.min(Math.max(pct - 10, 0), 60)}%` as any,
+          },
+        ]}
+      >
+        <Text style={bmiBarStyles.badgeText}>{label}</Text>
+      </View>
 
       {/* Color bar */}
       <View style={bmiBarStyles.bar}>
@@ -199,10 +284,7 @@ function BmiColorBar({ bmi }: { bmi: number }) {
 
         {/* Indicator */}
         <View
-          style={[
-            bmiBarStyles.indicator,
-            { left: `${pct}%` as any },
-          ]}
+          style={[bmiBarStyles.indicator, { left: `${pct}%` as any }]}
         />
       </View>
     </View>
@@ -211,9 +293,9 @@ function BmiColorBar({ bmi }: { bmi: number }) {
 
 const bmiBarStyles = StyleSheet.create({
   badge: {
-    borderRadius: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 5,
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 6,
   },
   badgeText: {
     color: '#fff',
@@ -232,35 +314,781 @@ const bmiBarStyles = StyleSheet.create({
   },
   indicator: {
     position: 'absolute',
-    top: -3,
-    width: 16,
-    height: 16,
-    borderRadius: 8,
+    top: -4,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
     backgroundColor: '#fff',
     borderWidth: 2.5,
     borderColor: COLORS.greenAccent,
-    marginLeft: -8,
+    marginLeft: -9,
+  },
+});
+
+// ─── Shared: Compact Weight+Height Input Block ───────────────────────────────
+function WeightHeightInputs({
+  weightInput, setWeightInput,
+  weightUnit, setWeightUnit,
+  heightUnit, setHeightUnit,
+  cmInput, setCmInput,
+  feetInput, setFeetInput,
+  inchesInput, setInchesInput,
+  darkBg,
+}: {
+  weightInput: string; setWeightInput: (v: string) => void;
+  weightUnit: 'kg' | 'lb'; setWeightUnit: (u: 'kg' | 'lb') => void;
+  heightUnit: 'cm' | 'in'; setHeightUnit: (u: 'cm' | 'in') => void;
+  cmInput: string; setCmInput: (v: string) => void;
+  feetInput: string; setFeetInput: (v: string) => void;
+  inchesInput: string; setInchesInput: (v: string) => void;
+  darkBg?: boolean;
+}) {
+  const s = darkBg ? sharedInputStyles.dark : sharedInputStyles.light;
+  return (
+    <View>
+      {/* Weight */}
+      <Text style={[sharedInputStyles.label, darkBg && { color: 'rgba(255,255,255,0.5)' }]}>WEIGHT</Text>
+      <View style={sharedInputStyles.row}>
+        <TextInput
+          style={[sharedInputStyles.input, darkBg && sharedInputStyles.inputDark]}
+          keyboardType="decimal-pad"
+          value={weightInput}
+          onChangeText={setWeightInput}
+          placeholder="0.0"
+          placeholderTextColor={darkBg ? '#555' : '#aaa'}
+        />
+        <View style={[sharedInputStyles.toggle, darkBg && sharedInputStyles.toggleDark]}>
+          {(['kg', 'lb'] as const).map((u) => (
+            <TouchableOpacity
+              key={u}
+              style={[sharedInputStyles.toggleBtn, weightUnit === u && sharedInputStyles.toggleBtnActive]}
+              onPress={() => {
+                const val = parseFloat(weightInput) || 0;
+                if (u === 'kg' && weightUnit === 'lb') setWeightInput((val / 2.20462).toFixed(1));
+                else if (u === 'lb' && weightUnit === 'kg') setWeightInput((val * 2.20462).toFixed(1));
+                setWeightUnit(u);
+              }}
+            >
+              <Text style={[sharedInputStyles.toggleText, weightUnit === u && sharedInputStyles.toggleTextActive]}>
+                {u.toUpperCase()}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      </View>
+
+      {/* Height */}
+      <Text style={[sharedInputStyles.label, { marginTop: 16 }, darkBg && { color: 'rgba(255,255,255,0.5)' }]}>HEIGHT</Text>
+      <View style={sharedInputStyles.row}>
+        {heightUnit === 'in' ? (
+          <>
+            <TextInput
+              style={[sharedInputStyles.input, { flex: 0.42 }, darkBg && sharedInputStyles.inputDark]}
+              keyboardType="decimal-pad" value={feetInput} onChangeText={setFeetInput}
+              placeholder="FT" placeholderTextColor={darkBg ? '#555' : '#aaa'} />
+            <Text style={[sharedInputStyles.ftLabel, darkBg && { color: 'rgba(255,255,255,0.4)' }]}>FT</Text>
+            <TextInput
+              style={[sharedInputStyles.input, { flex: 0.42 }, darkBg && sharedInputStyles.inputDark]}
+              keyboardType="decimal-pad" value={inchesInput} onChangeText={setInchesInput}
+              placeholder="IN" placeholderTextColor={darkBg ? '#555' : '#aaa'} />
+            <Text style={[sharedInputStyles.ftLabel, darkBg && { color: 'rgba(255,255,255,0.4)' }]}>IN</Text>
+          </>
+        ) : (
+          <TextInput
+            style={[sharedInputStyles.input, darkBg && sharedInputStyles.inputDark]}
+            keyboardType="decimal-pad" value={cmInput} onChangeText={setCmInput}
+            placeholder="0" placeholderTextColor={darkBg ? '#555' : '#aaa'} />
+        )}
+        <View style={[sharedInputStyles.toggle, darkBg && sharedInputStyles.toggleDark]}>
+          {(['cm', 'in'] as const).map((u) => (
+            <TouchableOpacity
+              key={u}
+              style={[sharedInputStyles.toggleBtn, heightUnit === u && sharedInputStyles.toggleBtnActive]}
+              onPress={() => {
+                if (u === 'in' && heightUnit === 'cm') {
+                  const cm = parseFloat(cmInput) || 0;
+                  const ti = cm / 2.54;
+                  setFeetInput(Math.floor(ti / 12).toString());
+                  setInchesInput((ti % 12).toFixed(1));
+                } else if (u === 'cm' && heightUnit === 'in') {
+                  const ft = parseFloat(feetInput) || 0;
+                  const inch = parseFloat(inchesInput) || 0;
+                  setCmInput(((ft * 12 + inch) * 2.54).toFixed(0));
+                }
+                setHeightUnit(u);
+              }}
+            >
+              <Text style={[sharedInputStyles.toggleText, heightUnit === u && sharedInputStyles.toggleTextActive]}>
+                {u.toUpperCase()}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      </View>
+    </View>
+  );
+}
+
+const sharedInputStyles = StyleSheet.create({
+  label: { fontSize: 11, fontWeight: '700', color: '#999', marginBottom: 6, letterSpacing: 1 },
+  row: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 4 },
+  input: {
+    flex: 1, fontSize: 20, fontWeight: '700', color: '#333',
+    borderBottomWidth: 1.5, borderBottomColor: '#ddd',
+    paddingVertical: 6, paddingHorizontal: 2, minWidth: 60,
+  },
+  inputDark: { color: '#fff', borderBottomColor: 'rgba(255,255,255,0.2)' },
+  ftLabel: { fontSize: 12, fontWeight: '700', color: '#999', marginHorizontal: -4 },
+  toggle: {
+    flexDirection: 'row', borderRadius: 8, overflow: 'hidden',
+    borderWidth: 1.5, borderColor: '#ddd',
+  },
+  toggleDark: { borderColor: 'rgba(255,255,255,0.15)' },
+  toggleBtn: { paddingHorizontal: 12, paddingVertical: 8, backgroundColor: '#f0f0f0' },
+  toggleBtnActive: { backgroundColor: COLORS.greenAccent },
+  toggleText: { fontSize: 12, fontWeight: '800', color: '#888' },
+  toggleTextActive: { color: '#fff' },
+  dark: {},
+  light: {},
+});
+
+// ─── Add Weight Modal (weight + height + calendar) ────────────────────────────
+interface AddWeightModalProps {
+  visible: boolean;
+  onClose: () => void;
+  onSave: (weightKg: number, heightCm: number, dateIso: string) => void;
+  currentWeightKg: number;
+  currentHeightCm: number;
+}
+
+function AddWeightModal({ visible, onClose, onSave, currentWeightKg, currentHeightCm }: AddWeightModalProps) {
+  const today = new Date();
+  const [weightUnit, setWeightUnit] = useState<'kg' | 'lb'>('kg');
+  const [weightInput, setWeightInput] = useState(currentWeightKg.toFixed(1));
+
+  // Height state
+  const [heightUnit, setHeightUnit] = useState<'cm' | 'in'>('cm');
+  const [cmInput, setCmInput] = useState(currentHeightCm.toFixed(0));
+  const [feetInput, setFeetInput] = useState(Math.floor((currentHeightCm / 2.54) / 12).toString());
+  const [inchesInput, setInchesInput] = useState(((currentHeightCm / 2.54) % 12).toFixed(1));
+
+  // Calendar state
+  const [calYear, setCalYear] = useState(today.getFullYear());
+  const [calMonth, setCalMonth] = useState(today.getMonth()); // 0-indexed
+  const [selectedDay, setSelectedDay] = useState(today.getDate());
+
+  const MONTH_NAMES = [
+    'January','February','March','April','May','June',
+    'July','August','September','October','November','December',
+  ];
+  const DAY_NAMES = ['Su','Mo','Tu','We','Th','Fr','Sa'];
+
+  // Reset when modal opens
+  React.useEffect(() => {
+    if (visible) {
+      const n = new Date();
+      setCalYear(n.getFullYear());
+      setCalMonth(n.getMonth());
+      setSelectedDay(n.getDate());
+      setWeightUnit('kg');
+      setWeightInput(currentWeightKg.toFixed(1));
+      setHeightUnit('cm');
+      setCmInput(currentHeightCm.toFixed(0));
+      const ti = currentHeightCm / 2.54;
+      setFeetInput(Math.floor(ti / 12).toString());
+      setInchesInput((ti % 12).toFixed(1));
+    }
+  }, [visible]);
+
+
+
+  const prevMonth = () => {
+    if (calMonth === 0) { setCalMonth(11); setCalYear(y => y - 1); }
+    else setCalMonth(m => m - 1);
+  };
+  const nextMonth = () => {
+    const n = new Date();
+    // Don't go beyond current month
+    if (calYear === n.getFullYear() && calMonth === n.getMonth()) return;
+    if (calMonth === 11) { setCalMonth(0); setCalYear(y => y + 1); }
+    else setCalMonth(m => m + 1);
+  };
+
+  // Build calendar grid
+  const firstDay = new Date(calYear, calMonth, 1).getDay(); // 0=Sun
+  const daysInMonth = new Date(calYear, calMonth + 1, 0).getDate();
+  const todayFull = new Date();
+  const isFutureDay = (d: number) => {
+    const sel = new Date(calYear, calMonth, d);
+    return sel > todayFull;
+  };
+  const isToday = (d: number) =>
+    d === todayFull.getDate() &&
+    calMonth === todayFull.getMonth() &&
+    calYear === todayFull.getFullYear();
+
+  const calCells: (number | null)[] = [
+    ...Array(firstDay).fill(null),
+    ...Array.from({ length: daysInMonth }, (_, i) => i + 1),
+  ];
+  // Pad to full rows
+  while (calCells.length % 7 !== 0) calCells.push(null);
+
+  const handleSave = () => {
+    let weightKg = parseFloat(weightInput) || 0;
+    if (weightUnit === 'lb') weightKg = weightKg / 2.20462;
+    let heightCm: number;
+    if (heightUnit === 'in') {
+      const ft = parseFloat(feetInput) || 0;
+      const inch = parseFloat(inchesInput) || 0;
+      heightCm = (ft * 12 + inch) * 2.54;
+    } else {
+      heightCm = parseFloat(cmInput) || 0;
+    }
+    if (weightKg <= 0 || heightCm <= 0) {
+      Alert.alert('Invalid', 'Please enter valid weight and height values.');
+      return;
+    }
+    const mm = String(calMonth + 1).padStart(2, '0');
+    const dd = String(selectedDay).padStart(2, '0');
+    const dateIso = `${calYear}-${mm}-${dd}`;
+    onSave(weightKg, heightCm, dateIso);
+  };
+
+  const isNextDisabled =
+    calYear === todayFull.getFullYear() && calMonth === todayFull.getMonth();
+
+  return (
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={addModalStyles.overlay}
+      >
+        <TouchableOpacity
+          style={StyleSheet.absoluteFillObject}
+          activeOpacity={1}
+          onPress={onClose}
+        />
+        <View style={addModalStyles.sheet}>
+          {/* Handle bar */}
+          <View style={addModalStyles.handle} />
+
+          <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+          <Text style={addModalStyles.title}>Log Weight</Text>
+
+          {/* ── Weight + Height ── */}
+          <WeightHeightInputs
+            weightInput={weightInput} setWeightInput={setWeightInput}
+            weightUnit={weightUnit} setWeightUnit={setWeightUnit}
+            heightUnit={heightUnit} setHeightUnit={setHeightUnit}
+            cmInput={cmInput} setCmInput={setCmInput}
+            feetInput={feetInput} setFeetInput={setFeetInput}
+            inchesInput={inchesInput} setInchesInput={setInchesInput}
+            darkBg
+          />
+
+          {/* ── Calendar ── */}
+          <View style={addModalStyles.calendarBox}>
+            {/* Month navigation */}
+            <View style={addModalStyles.calHeader}>
+              <TouchableOpacity onPress={prevMonth} style={addModalStyles.navBtn}>
+                <Text style={addModalStyles.navArrow}>{'‹'}</Text>
+              </TouchableOpacity>
+              <Text style={addModalStyles.monthLabel}>
+                {MONTH_NAMES[calMonth]} {calYear}
+              </Text>
+              <TouchableOpacity
+                onPress={nextMonth}
+                style={[addModalStyles.navBtn, isNextDisabled && { opacity: 0.3 }]}
+                disabled={isNextDisabled}
+              >
+                <Text style={addModalStyles.navArrow}>{'›'}</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Day-of-week headers */}
+            <View style={addModalStyles.calWeekRow}>
+              {DAY_NAMES.map((d) => (
+                <Text key={d} style={addModalStyles.calDayName}>{d}</Text>
+              ))}
+            </View>
+
+            {/* Calendar grid */}
+            <View style={addModalStyles.calGrid}>
+              {calCells.map((day, idx) => {
+                const future = day ? isFutureDay(day) : false;
+                const selected = day === selectedDay;
+                const todayMark = day ? isToday(day) : false;
+                return (
+                  <TouchableOpacity
+                    key={idx}
+                    style={[
+                      addModalStyles.calCell,
+                      selected && addModalStyles.calCellSelected,
+                      todayMark && !selected && addModalStyles.calCellToday,
+                    ]}
+                    onPress={() => !future && day && setSelectedDay(day)}
+                    disabled={!day || future}
+                    activeOpacity={0.7}
+                  >
+                    <Text
+                      style={[
+                        addModalStyles.calCellText,
+                        selected && addModalStyles.calCellTextSelected,
+                        (!day || future) && addModalStyles.calCellDisabled,
+                        todayMark && !selected && addModalStyles.calCellTodayText,
+                      ]}
+                    >
+                      {day ?? ''}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            {/* Selected date display */}
+            <View style={addModalStyles.selectedDateRow}>
+              <MaterialCommunityIcons name="calendar-check" size={16} color={COLORS.greenAccent} />
+              <Text style={addModalStyles.selectedDateText}>
+                {'  '}Selected:{' '}
+                <Text style={{ fontWeight: '900', color: COLORS.greenAccent }}>
+                  {MONTH_NAMES[calMonth]} {selectedDay}, {calYear}
+                </Text>
+              </Text>
+            </View>
+          </View>
+          </ScrollView>
+
+          {/* ── Actions ── */}
+          <View style={addModalStyles.actions}>
+            <TouchableOpacity onPress={onClose} style={addModalStyles.cancelBtn}>
+              <Text style={addModalStyles.cancelText}>CANCEL</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={handleSave} style={addModalStyles.saveBtn}>
+              <Text style={addModalStyles.saveText}>SAVE</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+}
+
+const addModalStyles = StyleSheet.create({
+  overlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0,0,0,0.6)',
+  },
+  sheet: {
+    backgroundColor: '#1A2340',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 20,
+    paddingBottom: 32,
+    paddingTop: 12,
+  },
+  handle: {
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    alignSelf: 'center',
+    marginBottom: 16,
+  },
+  title: {
+    fontSize: 20,
+    fontWeight: '900',
+    color: '#fff',
+    marginBottom: 20,
+    textAlign: 'center',
+  },
+  // Weight input row
+  weightRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 20,
+  },
+  weightInput: {
+    flex: 1,
+    fontSize: 28,
+    fontWeight: '900',
+    color: '#fff',
+    borderBottomWidth: 2,
+    borderBottomColor: COLORS.greenAccent,
+    paddingVertical: 6,
+    paddingHorizontal: 4,
+    textAlign: 'center',
+  },
+  unitToggle: {
+    flexDirection: 'row',
+    borderRadius: 10,
+    overflow: 'hidden',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255,255,255,0.15)',
+  },
+  unitBtn: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: 'rgba(255,255,255,0.07)',
+  },
+  unitBtnActive: {
+    backgroundColor: COLORS.greenAccent,
+  },
+  unitText: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: 'rgba(255,255,255,0.5)',
+  },
+  unitTextActive: {
+    color: '#fff',
+  },
+  // Calendar
+  calendarBox: {
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderRadius: 16,
+    padding: 12,
+    marginBottom: 20,
+  },
+  calHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  navBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  navArrow: {
+    fontSize: 22,
+    color: '#fff',
+    lineHeight: 26,
+  },
+  monthLabel: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#fff',
+  },
+  calWeekRow: {
+    flexDirection: 'row',
+    marginBottom: 6,
+  },
+  calDayName: {
+    flex: 1,
+    textAlign: 'center',
+    fontSize: 11,
+    fontWeight: '700',
+    color: 'rgba(255,255,255,0.4)',
+  },
+  calGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+  },
+  calCell: {
+    width: `${100 / 7}%` as any,
+    aspectRatio: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 100,
+  },
+  calCellSelected: {
+    backgroundColor: COLORS.greenAccent,
+  },
+  calCellToday: {
+    borderWidth: 1.5,
+    borderColor: COLORS.greenAccent,
+  },
+  calCellText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#fff',
+  },
+  calCellTextSelected: {
+    color: '#fff',
+    fontWeight: '900',
+  },
+  calCellDisabled: {
+    color: 'rgba(255,255,255,0.2)',
+  },
+  calCellTodayText: {
+    color: COLORS.greenAccent,
+    fontWeight: '800',
+  },
+  selectedDateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 10,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.08)',
+  },
+  selectedDateText: {
+    fontSize: 13,
+    color: 'rgba(255,255,255,0.7)',
+  },
+  // Actions
+  actions: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  cancelBtn: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    alignItems: 'center',
+  },
+  cancelText: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: 'rgba(255,255,255,0.6)',
+  },
+  saveBtn: {
+    flex: 2,
+    paddingVertical: 14,
+    borderRadius: 12,
+    backgroundColor: COLORS.greenAccent,
+    alignItems: 'center',
+  },
+  saveText: {
+    fontSize: 15,
+    fontWeight: '900',
+    color: '#fff',
+  },
+});
+
+// ─── Edit Weight & Height Modal ───────────────────────────────────────────────
+interface EditWeightHeightModalProps {
+  visible: boolean;
+  onClose: () => void;
+  onSave: (weightKg: number, heightCm: number) => void;
+  currentWeightKg: number;
+  currentHeightCm: number;
+}
+
+function EditWeightHeightModal({ visible, onClose, onSave, currentWeightKg, currentHeightCm }: EditWeightHeightModalProps) {
+  const [weightUnit, setWeightUnit] = useState<'kg' | 'lb'>('kg');
+  const [weightInput, setWeightInput] = useState(currentWeightKg.toFixed(1));
+  const [heightUnit, setHeightUnit] = useState<'cm' | 'in'>('cm');
+  const [cmInput, setCmInput] = useState(currentHeightCm.toFixed(0));
+  const [feetInput, setFeetInput] = useState(Math.floor((currentHeightCm / 2.54) / 12).toString());
+  const [inchesInput, setInchesInput] = useState(((currentHeightCm / 2.54) % 12).toFixed(1));
+
+  React.useEffect(() => {
+    if (visible) {
+      setWeightUnit('kg');
+      setWeightInput(currentWeightKg.toFixed(1));
+      setHeightUnit('cm');
+      setCmInput(currentHeightCm.toFixed(0));
+      const ti = currentHeightCm / 2.54;
+      setFeetInput(Math.floor(ti / 12).toString());
+      setInchesInput((ti % 12).toFixed(1));
+    }
+  }, [visible]);
+
+  const handleSave = () => {
+    let weightKg = parseFloat(weightInput) || 0;
+    if (weightUnit === 'lb') weightKg = weightKg / 2.20462;
+    let heightCm: number;
+    if (heightUnit === 'in') {
+      const ft = parseFloat(feetInput) || 0;
+      const inch = parseFloat(inchesInput) || 0;
+      heightCm = (ft * 12 + inch) * 2.54;
+    } else {
+      heightCm = parseFloat(cmInput) || 0;
+    }
+    if (weightKg <= 0 || heightCm <= 0) {
+      Alert.alert('Invalid Input', 'Please enter valid weight and height values.');
+      return;
+    }
+    onSave(weightKg, heightCm);
+  };
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={modalStyles.overlay}
+      >
+        <TouchableOpacity style={StyleSheet.absoluteFillObject} activeOpacity={1} onPress={onClose} />
+        <View style={modalStyles.card}>
+          <Text style={modalStyles.sectionTitle}>Edit Profile</Text>
+          <WeightHeightInputs
+            weightInput={weightInput} setWeightInput={setWeightInput}
+            weightUnit={weightUnit} setWeightUnit={setWeightUnit}
+            heightUnit={heightUnit} setHeightUnit={setHeightUnit}
+            cmInput={cmInput} setCmInput={setCmInput}
+            feetInput={feetInput} setFeetInput={setFeetInput}
+            inchesInput={inchesInput} setInchesInput={setInchesInput}
+          />
+          <View style={[modalStyles.actions, { marginTop: 24 }]}>
+            <TouchableOpacity onPress={onClose} style={modalStyles.actionBtn}>
+              <Text style={modalStyles.cancelText}>CANCEL</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={handleSave} style={modalStyles.actionBtn}>
+              <Text style={modalStyles.saveText}>SAVE</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+}
+
+
+const modalStyles = StyleSheet.create({
+  overlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 24,
+  },
+  card: {
+    backgroundColor: '#ffffff',
+    borderRadius: 20,
+    padding: 24,
+    width: '100%',
+    shadowColor: '#000',
+    shadowOpacity: 0.25,
+    shadowRadius: 12,
+    elevation: 10,
+  },
+  sectionTitle: {
+    fontSize: 22,
+    fontWeight: '900',
+    color: '#111',
+    marginBottom: 12,
+  },
+  inputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  input: {
+    flex: 1,
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#555',
+    borderBottomWidth: 1.5,
+    borderBottomColor: '#ddd',
+    paddingVertical: 6,
+    paddingHorizontal: 2,
+    minWidth: 60,
+  },
+  ftLabel: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#888',
+    marginHorizontal: -4,
+  },
+  unitToggle: {
+    flexDirection: 'row',
+    borderRadius: 8,
+    overflow: 'hidden',
+    borderWidth: 1.5,
+    borderColor: '#ddd',
+  },
+  unitBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: '#f0f0f0',
+  },
+  unitBtnActive: {
+    backgroundColor: COLORS.greenAccent,
+  },
+  unitBtnText: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#888',
+  },
+  unitBtnTextActive: {
+    color: '#fff',
+  },
+  actions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    marginTop: 28,
+    gap: 20,
+  },
+  actionBtn: {
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+  },
+  cancelText: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#29B6F6',
+  },
+  saveText: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#29B6F6',
   },
 });
 
 // ─── main screen ──────────────────────────────────────────────────────────────
 
 export default function HealthScreen() {
-  const { weight, height } = useSettings();
+  const { weight, height, setHeight, addWeightRecord, weightHistory } =
+    useSettings();
 
-  // Convert kg → lbs for display
-  const weightLbs = (weight * 2.20462).toFixed(1);
-  const currentWeight = parseFloat(weightLbs);
+  const [addWeightVisible, setAddWeightVisible] = useState(false);
+  const [editHeightVisible, setEditHeightVisible] = useState(false);
+  // Display unit preference (saved per session)
+  const [displayWeightUnit, setDisplayWeightUnit] = useState<'kg' | 'lbs'>('lbs');
 
+  // ── Derived metrics ──
   const heightInMeters = height / 100;
   const bmi = weight / (heightInMeters * heightInMeters);
   const bmiVal = Number(bmi.toFixed(2));
+  const { label: bmiLabel, color: bmiColor } = getBmiInfo(bmiVal);
 
-  let bmiLabel = 'Normal weight';
-  let bmiColor = '#66BB6A';
-  if (bmiVal < 18.5) { bmiLabel = 'Underweight'; bmiColor = '#90A4AE'; }
-  else if (bmiVal >= 30) { bmiLabel = 'Obese'; bmiColor = '#EF5350'; }
-  else if (bmiVal >= 25) { bmiLabel = 'Overweight'; bmiColor = '#FFA726'; }
+  // Current weight display
+  const currentDisplayWeight =
+    displayWeightUnit === 'lbs'
+      ? (weight * 2.20462).toFixed(1)
+      : weight.toFixed(1);
+
+  // Last 30-day change
+  const last30Change = (() => {
+    if (weightHistory.length < 2) return null;
+    const first = weightHistory[0].weight;
+    const last = weightHistory[weightHistory.length - 1].weight;
+    const diff =
+      displayWeightUnit === 'lbs'
+        ? (last - first) * 2.20462
+        : last - first;
+    const sign = diff >= 0 ? '+' : '';
+    return `${sign}${diff.toFixed(1)} ${displayWeightUnit}`;
+  })();
+
+  // Badge color: orange = gained weight, green = lost weight
+  const last30BadgeColor = (() => {
+    if (weightHistory.length < 2) return COLORS.cardBackground;
+    const diff = weightHistory[weightHistory.length - 1].weight - weightHistory[0].weight;
+    if (diff > 0) return '#FFA726'; // gain = orange
+    if (diff < 0) return '#66BB6A'; // loss = green
+    return COLORS.cardBackground;
+  })();
+
+  const handleAddWeight = (weightKg: number, heightCm: number, dateIso: string) => {
+    addWeightRecord(weightKg, dateIso);
+    setHeight(heightCm);
+    setAddWeightVisible(false);
+  };
+
+  const handleEditWeight = (weightKg: number, heightCm: number) => {
+    addWeightRecord(weightKg);
+    setHeight(heightCm);
+    setEditHeightVisible(false);
+  };
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -271,7 +1099,11 @@ export default function HealthScreen() {
         <Text style={styles.headerTitle}>Health</Text>
       </View>
 
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.scrollContent}
+        keyboardShouldPersistTaps="handled"
+      >
 
         {/* ── Workout Banner ──────────────────────────────────────────────── */}
         <TouchableOpacity
@@ -279,7 +1111,6 @@ export default function HealthScreen() {
           activeOpacity={0.85}
           onPress={() => Alert.alert('Workout', 'Starting your fast workout session!')}
         >
-          {/* Avatar placeholder */}
           <View style={styles.avatarCircle}>
             <MaterialCommunityIcons name="human-female" size={34} color="#fff" />
           </View>
@@ -298,7 +1129,7 @@ export default function HealthScreen() {
         <View style={styles.card}>
           <View style={styles.cardHeader}>
             <Text style={styles.cardTitle}>Weight</Text>
-            <TouchableOpacity onPress={() => Alert.alert('Add Weight', 'Log today\'s weight')}>
+            <TouchableOpacity onPress={() => setAddWeightVisible(true)}>
               <Text style={styles.addLink}>ADD</Text>
             </TouchableOpacity>
           </View>
@@ -307,12 +1138,22 @@ export default function HealthScreen() {
           <View style={styles.weightRow}>
             <View>
               <Text style={styles.weightSub}>Current</Text>
-              <Text style={styles.weightVal}>{currentWeight} lbs</Text>
+              <Text style={styles.weightVal}>
+                {currentDisplayWeight}{' '}
+                <Text style={styles.weightUnit}>{displayWeightUnit}</Text>
+              </Text>
             </View>
-            <View>
+            <View style={{ alignItems: 'flex-end' }}>
               <Text style={styles.weightSub}>Last 30 days</Text>
-              <View style={styles.last30Badge}>
-                <Text style={styles.last30Text}>-.-</Text>
+              <View
+                style={[
+                  styles.last30Badge,
+                  { backgroundColor: last30BadgeColor },
+                ]}
+              >
+                <Text style={styles.last30Text}>
+                  {last30Change ?? '-.-'}
+                </Text>
               </View>
             </View>
           </View>
@@ -321,7 +1162,7 @@ export default function HealthScreen() {
           <Text style={styles.yearLabel}>2026</Text>
 
           {/* Weight graph */}
-          <WeightGraph currentWeight={currentWeight} />
+          <WeightGraph history={weightHistory} unit={displayWeightUnit} currentWeight={weight} />
         </View>
 
         {/* ── BMI Section ─────────────────────────────────────────────────── */}
@@ -329,11 +1170,11 @@ export default function HealthScreen() {
           <View style={styles.cardHeader}>
             <Text style={styles.bmiTitle}>
               BMI (kg/m²):{' '}
-              <Text style={[styles.bmiValue, { color: bmiColor }]}>{bmiVal}</Text>
+              <Text style={[styles.bmiValue, { color: bmiColor }]}>
+                {bmiVal}
+              </Text>
             </Text>
-            <TouchableOpacity
-              onPress={() => Alert.alert('Edit BMI', 'Update your height and weight in More settings')}
-            >
+            <TouchableOpacity onPress={() => setEditHeightVisible(true)}>
               <Text style={styles.addLink}>EDIT</Text>
             </TouchableOpacity>
           </View>
@@ -341,10 +1182,46 @@ export default function HealthScreen() {
           <View style={{ marginTop: 12 }}>
             <BmiColorBar bmi={bmiVal} />
           </View>
+
+          {/* Height display */}
+          <View style={styles.heightRow}>
+            <MaterialCommunityIcons
+              name="human-male-height"
+              size={16}
+              color={COLORS.textSecondary}
+            />
+            <Text style={styles.heightText}>
+              Height:{' '}
+              {(() => {
+                const totalIn = height / 2.54;
+                const ft = Math.floor(totalIn / 12);
+                const inch = (totalIn % 12).toFixed(1);
+                return `${height.toFixed(0)} cm  (${ft}ft ${inch}in)`;
+              })()}
+            </Text>
+          </View>
         </View>
 
         <View style={{ height: 40 }} />
       </ScrollView>
+
+      {/* ── Add Weight Modal (with calendar) ───────────────────────────────── */}
+      <AddWeightModal
+        visible={addWeightVisible}
+        onClose={() => setAddWeightVisible(false)}
+        onSave={handleAddWeight}
+        currentWeightKg={weight}
+        currentHeightCm={height}
+      />
+
+      {/* ── Edit Weight & Height Modal ──────────────────────────────────────────────── */}
+      <EditWeightHeightModal
+        visible={editHeightVisible}
+        onClose={() => setEditHeightVisible(false)}
+        onSave={handleEditWeight}
+        currentWeightKg={weight}
+        currentHeightCm={height}
+      />
     </SafeAreaView>
   );
 }
@@ -451,7 +1328,6 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: COLORS.textSecondary,
     fontWeight: '600',
-    textAlign: 'center',
     marginBottom: 2,
   },
   weightVal: {
@@ -459,8 +1335,13 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     color: '#FFFFFF',
   },
+  weightUnit: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: COLORS.textSecondary,
+  },
   last30Badge: {
-    backgroundColor: COLORS.greenAccent,
+    backgroundColor: COLORS.yellow,
     borderRadius: 8,
     paddingHorizontal: 12,
     paddingVertical: 8,
@@ -470,7 +1351,7 @@ const styles = StyleSheet.create({
   },
   last30Text: {
     color: '#fff',
-    fontSize: 15,
+    fontSize: 13,
     fontWeight: '900',
   },
   yearLabel: {
@@ -478,7 +1359,7 @@ const styles = StyleSheet.create({
     color: COLORS.textSecondary,
     fontWeight: '600',
     marginBottom: 4,
-    paddingLeft: 32,
+    paddingLeft: 36,
   },
 
   // BMI
@@ -490,5 +1371,21 @@ const styles = StyleSheet.create({
   bmiValue: {
     fontSize: 20,
     fontWeight: '900',
+  },
+
+  // Height
+  heightRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 14,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+  },
+  heightText: {
+    fontSize: 12,
+    color: COLORS.textSecondary,
+    fontWeight: '600',
   },
 });

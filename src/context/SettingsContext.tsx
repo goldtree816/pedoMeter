@@ -29,6 +29,11 @@ export interface StepRecord {
   note?: string;
 }
 
+export interface WeightRecord {
+  date: string; // ISO date string
+  weight: number; // in kg
+}
+
 export type WalkingGoal = 'lose_weight' | 'stay_fit' | 'reduce_stress' | 'sleep_better';
 
 export const GOAL_LABELS: Record<WalkingGoal, { title: string; desc: string; icon: string }> = {
@@ -72,6 +77,9 @@ interface SettingsContextType {
   height: number; // in cm
   distanceUnit: DistanceUnit;
 
+  // Weight history for graph
+  weightHistory: WeightRecord[];
+
   // Actions
   addSteps: (steps: number, date: Date, note?: string) => void;
   updateSteps: (id: string, steps: number, date: Date, note?: string) => void;
@@ -83,6 +91,7 @@ interface SettingsContextType {
   setWeight: (w: number) => void;
   setHeight: (h: number) => void;
   setDistanceUnit: (unit: DistanceUnit) => void;
+  addWeightRecord: (weightKg: number, dateIso?: string) => void;
   resetAllData: () => void;
 }
 
@@ -172,6 +181,8 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
   const [height, setHeight] = useState(175);
   const [distanceUnit, setDistanceUnit] = useState<DistanceUnit>('Mile');
   const [isCounterRunning, setIsCounterRunning] = useState(false);
+  // Start with empty weight history — user builds it by tapping ADD
+  const [weightHistory, setWeightHistory] = useState<WeightRecord[]>([]);
 
   // liveSteps holds the raw step count from the sensor since the counter last started.
   // We keep it separate so we don't double-count on restarts.
@@ -397,6 +408,24 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
     });
   };
 
+  const addWeightRecord = (weightKg: number, dateIso?: string) => {
+    const today = dateIso ?? new Date().toISOString().split('T')[0];
+    setWeightHistory((prev) => {
+      // Replace entry for that date if it already exists, otherwise append
+      const idx = prev.findIndex((r) => r.date === today);
+      if (idx !== -1) {
+        const updated = [...prev];
+        updated[idx] = { date: today, weight: weightKg };
+        // Keep sorted by date
+        return updated.sort((a, b) => a.date.localeCompare(b.date));
+      }
+      return [...prev, { date: today, weight: weightKg }].sort(
+        (a, b) => a.date.localeCompare(b.date)
+      );
+    });
+    setWeight(weightKg);
+  };
+
   const resetAllData = () => {
     stopSensor();
     sessionBaseSteps.current = 0;
@@ -409,6 +438,7 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
     setWeight(70);
     setHeight(175);
     setDistanceUnit('Mile');
+    setWeightHistory([]);
     // Restart sensor after reset
     startSensor();
   };
@@ -425,6 +455,7 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
         weight,
         height,
         distanceUnit,
+        weightHistory,
         isCounterRunning,
         liveStepsToday,
         addSteps,
@@ -437,6 +468,7 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
         setWeight,
         setHeight,
         setDistanceUnit,
+        addWeightRecord,
         resetAllData,
       }}
     >
