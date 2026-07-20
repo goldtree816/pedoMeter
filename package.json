@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "react-native-accurate-step-counter": "^2.0.4",
+    "react-native-shake": "^6.9.5"
+  }
+}
