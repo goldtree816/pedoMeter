@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
+import { useLocalSearchParams, useFocusEffect } from 'expo-router';
 import {
   View,
   Text,
@@ -298,7 +299,16 @@ function BarChart({
 
 export default function ReportScreen() {
   const { records, dailyGoal, distanceUnit } = useSettings();
+  const { metric } = useLocalSearchParams<{ metric?: MetricTab }>();
   const [activeTab, setActiveTab] = useState<MetricTab>('Step');
+
+  useFocusEffect(
+    useCallback(() => {
+      if (metric && ['Step', 'Calorie', 'Time', 'Distance'].includes(metric)) {
+        setActiveTab(metric);
+      }
+    }, [metric])
+  );
 
   const weekData = getLast7Days(records, dailyGoal);
   const todayHours = getTodayHours(records);

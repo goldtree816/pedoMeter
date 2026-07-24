@@ -41,8 +41,9 @@ function getBmiInfo(bmi: number): { label: string; color: string } {
 }
 
 function formatDate(isoDate: string): string {
-  const d = new Date(isoDate + 'T00:00:00');
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const [y, m, d] = isoDate.split('-').map(Number);
+  const dt = new Date(y, m - 1, d);
+  return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
 // ─── Weight line graph ────────────────────────────────────────────────────────
@@ -74,8 +75,9 @@ function WeightGraph({
 
   // Map an ISO date string to an X pixel position
   const dateToX = (isoDate: string): number => {
-    const d = new Date(isoDate + 'T00:00:00');
-    const ratio = Math.max(0, Math.min(1, (d.getTime() - windowStart.getTime()) / windowMs));
+    const [y, m, d] = isoDate.split('-').map(Number);
+    const dt = new Date(y, m - 1, d);
+    const ratio = Math.max(0, Math.min(1, (dt.getTime() - windowStart.getTime()) / windowMs));
     return ratio * graphW;
   };
 
@@ -91,8 +93,9 @@ function WeightGraph({
 
   // Only show entries within the 30-day window
   const data = history.filter((r) => {
-    const d = new Date(r.date + 'T00:00:00');
-    return d >= windowStart && d <= windowEnd;
+    const [y, m, d] = r.date.split('-').map(Number);
+    const dt = new Date(y, m - 1, d);
+    return dt >= windowStart && dt <= windowEnd;
   });
 
   // ── Y axis ────────────────────────────────────────────────────────────────
@@ -110,23 +113,36 @@ function WeightGraph({
   );
 
   // ── Build data points ─────────────────────────────────────────────────────
-  let points = data.map((r) => ({
+  // Each data point is plotted at its actual date position on the X axis.
+  // For single points we add subtle extension lines so the dot has visual context.
+  const rawPoints = data.map((r) => ({
     x: dateToX(r.date),
     y: toY(toDisplay(r.weight)),
     label: formatDate(r.date),
     weight: toDisplay(r.weight),
+    isReal: true,
   }));
 
-  if (points.length === 0) {
+  let points: { x: number; y: number; label: string; weight: number; isReal: boolean }[];
+
+  if (rawPoints.length === 0) {
+    // No data at all — show a flat reference line at the current weight
     points = [
-      { x: 0, y: toY(baseWeight), label: '', weight: baseWeight },
-      { x: graphW, y: toY(baseWeight), label: '', weight: baseWeight },
+      { x: 0, y: toY(baseWeight), label: '', weight: baseWeight, isReal: false },
+      { x: graphW, y: toY(baseWeight), label: '', weight: baseWeight, isReal: false },
     ];
-  } else if (points.length === 1) {
+  } else if (rawPoints.length === 1) {
+    // Single entry — keep the real point at its date, add thin extension lines
+    const pt = rawPoints[0];
+    const extL = Math.max(0, pt.x - 30);
+    const extR = Math.min(graphW, pt.x + 30);
     points = [
-      { x: 0, y: points[0].y, label: '', weight: points[0].weight },
-      { x: graphW, y: points[0].y, label: '', weight: points[0].weight },
+      { x: extL, y: pt.y, label: '', weight: pt.weight, isReal: false },
+      pt,
+      { x: extR, y: pt.y, label: '', weight: pt.weight, isReal: false },
     ];
+  } else {
+    points = rawPoints;
   }
 
   const polylinePoints = points.map((p) => `${p.x},${p.y}`).join(' ');
@@ -185,30 +201,39 @@ function WeightGraph({
                 strokeLinejoin="round" strokeLinecap="round" />
             )}
 
-            {/* Dots and Labels */}
+            {/* Dots and Labels — only render for real data points */}
             {points.map((pt, idx) => {
-              const isFirst = idx === 0;
-              const isLast = idx === points.length - 1;
+              if (!pt.isReal) return null;
               return (
                 <React.Fragment key={idx}>
-                  {(isFirst || isLast) && (
-                    <Circle cx={pt.x} cy={pt.y} r={10} fill="rgba(82,196,130,0.2)" />
-                  )}
+                  <Circle cx={pt.x} cy={pt.y} r={10} fill="rgba(82,196,130,0.2)" />
                   <Circle cx={pt.x} cy={pt.y}
-                    r={isFirst || isLast ? 6 : 4}
-                    fill={isFirst || isLast ? COLORS.greenAccent : 'rgba(255,255,255,0.25)'}
-                    stroke="#fff" strokeWidth={isFirst || isLast ? 2 : 1} />
+                    r={6}
+                    fill={COLORS.greenAccent}
+                    stroke="#fff" strokeWidth={2} />
                   
                   {/* Weight label for the particular date */}
                   <SvgText
                     x={pt.x}
-                    y={pt.y - (isFirst || isLast ? 16 : 12)}
-                    fill={isFirst || isLast ? COLORS.greenAccent : "#FFFFFF"}
-                    fontSize={isFirst || isLast ? "12" : "10"}
+                    y={pt.y - 16}
+                    fill={COLORS.greenAccent}
+                    fontSize="12"
                     fontWeight="bold"
                     textAnchor="middle"
                   >
                     {pt.weight.toFixed(1)}
+                  </SvgText>
+                  
+                  {/* Date label below the dot */}
+                  <SvgText
+                    x={pt.x}
+                    y={pt.y + 22}
+                    fill="rgba(255,255,255,0.5)"
+                    fontSize="9"
+                    fontWeight="600"
+                    textAnchor="middle"
+                  >
+                    {pt.label}
                   </SvgText>
                 </React.Fragment>
               );
@@ -565,7 +590,7 @@ function AddWeightModal({ visible, onClose, onSave, currentWeightKg, currentHeig
         style={addModalStyles.overlay}
       >
         <TouchableOpacity
-          style={StyleSheet.absoluteFillObject}
+          style={StyleSheet.absoluteFill}
           activeOpacity={1}
           onPress={onClose}
         />
@@ -916,7 +941,7 @@ function EditWeightHeightModal({ visible, onClose, onSave, currentWeightKg, curr
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={modalStyles.overlay}
       >
-        <TouchableOpacity style={StyleSheet.absoluteFillObject} activeOpacity={1} onPress={onClose} />
+        <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={onClose} />
         <View style={modalStyles.card}>
           <Text style={modalStyles.sectionTitle}>Edit Profile</Text>
           <WeightHeightInputs
@@ -1065,8 +1090,10 @@ export default function HealthScreen() {
       displayWeightUnit === 'lbs'
         ? (last - first) * 2.20462
         : last - first;
-    const sign = diff >= 0 ? '+' : '';
-    return `${sign}${diff.toFixed(1)} ${displayWeightUnit}`;
+    
+    if (Math.abs(diff) < 0.1) return 'No change';
+    const action = diff > 0 ? 'Increased by' : 'Decreased by';
+    return `${action} ${Math.abs(diff).toFixed(1)} ${displayWeightUnit}`;
   })();
 
   // Badge color: orange = gained weight, green = lost weight
@@ -1351,8 +1378,8 @@ const styles = StyleSheet.create({
   },
   last30Text: {
     color: '#fff',
-    fontSize: 13,
-    fontWeight: '900',
+    fontSize: 12,
+    fontWeight: '800',
   },
   yearLabel: {
     fontSize: 10,

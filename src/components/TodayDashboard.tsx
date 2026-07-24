@@ -101,7 +101,9 @@ export default function TodayDashboard() {
       <View style={styles.heroCard}>
         <View style={styles.heroHeader}>
           <View style={styles.stepsTextRow}>
-            <Text style={styles.stepsCount}>{stepsToday}</Text>
+            <TouchableOpacity onPress={() => router.push('/report-details?metric=Step')} activeOpacity={0.7}>
+              <Text style={styles.stepsCount}>{stepsToday}</Text>
+            </TouchableOpacity>
             <TouchableOpacity 
               style={styles.editIcon}
               onPress={() => router.push({ pathname: '/settings/new-record', params: { editId: todayRecord?.id } })}
@@ -139,31 +141,43 @@ export default function TodayDashboard() {
         {/* Metrics Row */}
         <View style={styles.metricsRow}>
           {/* Distance */}
-          <View style={styles.metricItem}>
+          <TouchableOpacity 
+            style={styles.metricItem}
+            activeOpacity={0.7}
+            onPress={() => router.push('/report-details?metric=Distance')}
+          >
             <View style={[styles.iconCircle, { backgroundColor: 'rgba(246, 196, 68, 0.15)' }]}>
               <MaterialCommunityIcons name="shoe-print" size={20} color={COLORS.yellow} />
             </View>
             <Text style={styles.metricValue}>{distanceToday.toFixed(2)}</Text>
             <Text style={styles.metricLabel}>{distanceUnit}</Text>
-          </View>
+          </TouchableOpacity>
 
           {/* Calories */}
-          <View style={styles.metricItem}>
+          <TouchableOpacity 
+            style={styles.metricItem}
+            activeOpacity={0.7}
+            onPress={() => router.push('/report-details?metric=Calorie')}
+          >
             <View style={[styles.iconCircle, { backgroundColor: 'rgba(255, 118, 75, 0.15)' }]}>
               <MaterialCommunityIcons name="fire" size={20} color={COLORS.orange} />
             </View>
             <Text style={styles.metricValue}>{caloriesToday.toFixed(1)}</Text>
             <Text style={styles.metricLabel}>Calories</Text>
-          </View>
+          </TouchableOpacity>
 
           {/* Time */}
-          <View style={styles.metricItem}>
+          <TouchableOpacity 
+            style={styles.metricItem}
+            activeOpacity={0.7}
+            onPress={() => router.push('/report-details?metric=Time')}
+          >
             <View style={[styles.iconCircle, { backgroundColor: 'rgba(41, 182, 246, 0.15)' }]}>
               <MaterialCommunityIcons name="clock-outline" size={20} color={COLORS.blue} />
             </View>
             <Text style={styles.metricValue}>{formatDuration(activeDurationToday)}</Text>
             <Text style={styles.metricLabel}>Time</Text>
-          </View>
+          </TouchableOpacity>
         </View>
       </View>
 
