@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import Svg, { Polyline, Circle, Defs, LinearGradient, Stop, Polygon, Text as SvgText } from 'react-native-svg';
+import Svg, { Polyline, Circle, Defs, LinearGradient, Stop, Polygon, Text as SvgText, Path, Line } from 'react-native-svg';
 import {
   View,
   Text,
@@ -42,8 +42,8 @@ function getBmiInfo(bmi: number): { label: string; color: string } {
 
 function formatDate(isoDate: string): string {
   const [y, m, d] = isoDate.split('-').map(Number);
-  const dt = new Date(y, m - 1, d);
-  return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  return `${months[m - 1]} ${d}`;
 }
 
 // ─── Weight line graph ────────────────────────────────────────────────────────
@@ -62,36 +62,54 @@ function WeightGraph({
   const Y_AXIS_WIDTH = 42;
   const graphW = GRAPH_WIDTH - Y_AXIS_WIDTH;
   const graphH = 200;
-  const PAD_TOP = 16;
-  const PAD_BOTTOM = 8;
+  const PAD_TOP = 28;
+  const PAD_BOTTOM = 22;
+  const PAD_LEFT = 16;
+  const PAD_RIGHT = 16;
   const plotH = graphH - PAD_TOP - PAD_BOTTOM;
+  const plotW = graphW - PAD_LEFT - PAD_RIGHT;
 
   const windowEnd = new Date();
   windowEnd.setHours(23, 59, 59, 999);
-  const windowStart = new Date(windowEnd);
+  
+  // Default window start is 29 days ago (30 days total)
+  let windowStart = new Date(windowEnd);
   windowStart.setDate(windowStart.getDate() - 29);
   windowStart.setHours(0, 0, 0, 0);
+
+  // If there are records older than windowStart, expand windowStart to include the oldest record
+  if (history.length > 0) {
+    const oldestRecordDateStr = history[0].date;
+    const [y, m, d] = oldestRecordDateStr.split('-').map(Number);
+    const oldestDt = new Date(y, m - 1, d);
+    if (oldestDt < windowStart) {
+      windowStart = oldestDt;
+    }
+  }
+
   const windowMs = windowEnd.getTime() - windowStart.getTime();
+  const totalDays = Math.max(29, Math.round(windowMs / (1000 * 60 * 60 * 24)));
 
   // Map an ISO date string to an X pixel position
   const dateToX = (isoDate: string): number => {
     const [y, m, d] = isoDate.split('-').map(Number);
     const dt = new Date(y, m - 1, d);
     const ratio = Math.max(0, Math.min(1, (dt.getTime() - windowStart.getTime()) / windowMs));
-    return ratio * graphW;
+    return PAD_LEFT + ratio * plotW;
   };
 
-  // 5 evenly-spaced X-axis labels across the 30-day window
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  // 5 evenly-spaced X-axis labels across the dynamic window
   const xLabels = Array.from({ length: 5 }, (_, i) => {
     const d = new Date(windowStart);
-    d.setDate(d.getDate() + Math.round((i / 4) * 29));
+    d.setDate(d.getDate() + Math.round((i / 4) * totalDays));
     return {
-      label: d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+      label: `${months[d.getMonth()]} ${d.getDate()}`,
       ratio: i / 4,
     };
   });
 
-  // Only show entries within the 30-day window
+  // Only show entries within the dynamic window
   const data = history.filter((r) => {
     const [y, m, d] = r.date.split('-').map(Number);
     const dt = new Date(y, m - 1, d);
@@ -114,7 +132,6 @@ function WeightGraph({
 
   // ── Build data points ─────────────────────────────────────────────────────
   // Each data point is plotted at its actual date position on the X axis.
-  // For single points we add subtle extension lines so the dot has visual context.
   const rawPoints = data.map((r) => ({
     x: dateToX(r.date),
     y: toY(toDisplay(r.weight)),
@@ -128,48 +145,59 @@ function WeightGraph({
   if (rawPoints.length === 0) {
     // No data at all — show a flat reference line at the current weight
     points = [
-      { x: 0, y: toY(baseWeight), label: '', weight: baseWeight, isReal: false },
-      { x: graphW, y: toY(baseWeight), label: '', weight: baseWeight, isReal: false },
+      { x: PAD_LEFT, y: toY(baseWeight), label: '', weight: baseWeight, isReal: false },
+      { x: graphW - PAD_RIGHT, y: toY(baseWeight), label: '', weight: baseWeight, isReal: false },
     ];
   } else if (rawPoints.length === 1) {
-    // Single entry — keep the real point at its date, add thin extension lines
+    // Single entry — keep the real point at its date, stretch extension lines to the edges
     const pt = rawPoints[0];
-    const extL = Math.max(0, pt.x - 30);
-    const extR = Math.min(graphW, pt.x + 30);
     points = [
-      { x: extL, y: pt.y, label: '', weight: pt.weight, isReal: false },
+      { x: PAD_LEFT, y: pt.y, label: '', weight: pt.weight, isReal: false },
       pt,
-      { x: extR, y: pt.y, label: '', weight: pt.weight, isReal: false },
+      { x: graphW - PAD_RIGHT, y: pt.y, label: '', weight: pt.weight, isReal: false },
     ];
   } else {
     points = rawPoints;
   }
 
-  const polylinePoints = points.map((p) => `${p.x},${p.y}`).join(' ');
-  const fillPolygon =
-    points.length >= 2
-      ? points.map((p) => `${p.x},${p.y}`).join(' ') +
-        ` ${points[points.length - 1].x},${graphH} ${points[0].x},${graphH}`
-      : '';
-
-  // Removed complex HTML tooltips in favor of native SVG text
+  const pathD = points.length > 0 
+    ? `M ${points[0].x} ${points[0].y} ` + points.slice(1).map(p => `L ${p.x} ${p.y}`).join(' ')
+    : '';
+    
+  const fillBaseY = PAD_TOP + plotH;
+  const fillPathD = points.length >= 2
+    ? `${pathD} L ${points[points.length - 1].x} ${fillBaseY} L ${points[0].x} ${fillBaseY} Z`
+    : '';
 
   return (
     <View>
       <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
-        {/* Y-axis labels */}
+        {/* Y-axis labels absolute positioning to align perfectly with grid lines */}
         <View
           style={{
             width: Y_AXIS_WIDTH,
             height: graphH,
-            justifyContent: 'space-between',
-            paddingTop: PAD_TOP,
-            paddingBottom: PAD_BOTTOM,
+            position: 'relative',
           }}
         >
-          {yLabels.map((v, i) => (
-            <Text key={i} style={graphStyles.yLabel}>{v}</Text>
-          ))}
+          {yLabels.map((v, idx) => {
+            const gy = PAD_TOP + (idx / (numYLabels - 1)) * plotH;
+            return (
+              <Text
+                key={idx}
+                style={[
+                  graphStyles.yLabel,
+                  {
+                    position: 'absolute',
+                    top: gy - 6, // vertically centers the label on the line
+                    right: 6,
+                  },
+                ]}
+              >
+                {v}
+              </Text>
+            );
+          })}
         </View>
 
         {/* SVG canvas */}
@@ -186,17 +214,17 @@ function WeightGraph({
             {yLabels.map((_, idx) => {
               const gy = PAD_TOP + (idx / (numYLabels - 1)) * plotH;
               return (
-                <Polyline key={idx} points={`0,${gy} ${graphW},${gy}`}
-                  fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="1" />
+                <Line key={idx} x1="0" y1={gy} x2={graphW} y2={gy}
+                  stroke="rgba(255,255,255,0.08)" strokeWidth="1" />
               );
             })}
 
             {/* Gradient fill */}
-            {fillPolygon !== '' && <Polygon points={fillPolygon} fill="url(#lineGrad)" />}
+            {fillPathD !== '' && <Path d={fillPathD} fill="url(#lineGrad)" />}
 
             {/* Line */}
-            {points.length >= 2 && (
-              <Polyline points={polylinePoints} fill="none"
+            {pathD !== '' && (
+              <Path d={pathD} fill="none"
                 stroke={COLORS.greenAccent} strokeWidth="2.5"
                 strokeLinejoin="round" strokeLinecap="round" />
             )}
@@ -215,7 +243,7 @@ function WeightGraph({
                   {/* Weight label for the particular date */}
                   <SvgText
                     x={pt.x}
-                    y={pt.y - 16}
+                    y={pt.y - 14}
                     fill={COLORS.greenAccent}
                     fontSize="12"
                     fontWeight="bold"
@@ -227,7 +255,7 @@ function WeightGraph({
                   {/* Date label below the dot */}
                   <SvgText
                     x={pt.x}
-                    y={pt.y + 22}
+                    y={pt.y + 20}
                     fill="rgba(255,255,255,0.5)"
                     fontSize="9"
                     fontWeight="600"
@@ -242,13 +270,13 @@ function WeightGraph({
         </View>
       </View>
 
-      {/* X-axis: 5 evenly-spaced date labels across the 30-day window */}
+      {/* X-axis: 5 evenly-spaced date labels aligned with graph padding */}
       <View style={{ height: 18, marginLeft: Y_AXIS_WIDTH, position: 'relative' }}>
         {xLabels.map((xl, i) => (
           <Text key={i}
             style={[graphStyles.xLabel, {
               position: 'absolute',
-              left: xl.ratio * graphW - (i === 4 ? 32 : i === 0 ? 0 : 16),
+              left: PAD_LEFT + xl.ratio * plotW - (i === 4 ? 32 : i === 0 ? 0 : 16),
             }]}>
             {xl.label}
           </Text>
@@ -263,7 +291,6 @@ const graphStyles = StyleSheet.create({
     fontSize: 10,
     color: COLORS.textSecondary,
     textAlign: 'right',
-    paddingRight: 6,
   },
   xLabel: {
     fontSize: 10,
@@ -1061,13 +1088,30 @@ const modalStyles = StyleSheet.create({
 // ─── main screen ──────────────────────────────────────────────────────────────
 
 export default function HealthScreen() {
-  const { weight, height, setHeight, addWeightRecord, weightHistory } =
+  const { weight, height, setHeight, addWeightRecord, weightHistory, clearWeightHistory } =
     useSettings();
 
   const [addWeightVisible, setAddWeightVisible] = useState(false);
   const [editHeightVisible, setEditHeightVisible] = useState(false);
   // Display unit preference (saved per session)
   const [displayWeightUnit, setDisplayWeightUnit] = useState<'kg' | 'lbs'>('lbs');
+
+  const handleClearHistory = () => {
+    if (Platform.OS === 'web') {
+      if (window.confirm("Are you sure you want to delete all your weight data?")) {
+        clearWeightHistory();
+      }
+    } else {
+      Alert.alert(
+        "Clear Weight History",
+        "Are you sure you want to delete all your weight data?",
+        [
+          { text: "Cancel", style: "cancel" },
+          { text: "Delete", style: "destructive", onPress: clearWeightHistory }
+        ]
+      );
+    }
+  };
 
   // ── Derived metrics ──
   const heightInMeters = height / 100;
@@ -1156,9 +1200,16 @@ export default function HealthScreen() {
         <View style={styles.card}>
           <View style={styles.cardHeader}>
             <Text style={styles.cardTitle}>Weight</Text>
-            <TouchableOpacity onPress={() => setAddWeightVisible(true)}>
-              <Text style={styles.addLink}>ADD</Text>
-            </TouchableOpacity>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+              {weightHistory.length > 0 && (
+                <TouchableOpacity onPress={handleClearHistory}>
+                  <Text style={[styles.addLink, { color: '#EF5350' }]}>CLEAR</Text>
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity onPress={() => setAddWeightVisible(true)}>
+                <Text style={styles.addLink}>ADD</Text>
+              </TouchableOpacity>
+            </View>
           </View>
 
           {/* Current weight + last 30 days badge */}

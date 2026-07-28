@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from 'react';
-import { useLocalSearchParams, useFocusEffect } from 'expo-router';
+import { useLocalSearchParams, useFocusEffect, useRouter } from 'expo-router';
 import {
   View,
   Text,
@@ -298,6 +298,7 @@ function BarChart({
 // ─────────────────── main screen ─────────────────────────────────────────────
 
 export default function ReportScreen() {
+  const router = useRouter();
   const { records, dailyGoal, distanceUnit } = useSettings();
   const { metric } = useLocalSearchParams<{ metric?: MetricTab }>();
   const [activeTab, setActiveTab] = useState<MetricTab>('Step');
@@ -346,30 +347,13 @@ export default function ReportScreen() {
 
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
 
-        {/* Challenge Banner */}
-        <View style={styles.challengeCard}>
-          <View style={styles.challengeLeft}>
-            <View style={styles.challengeBadge}>
-              <Text style={styles.challengeBadgeNum}>12</Text>
-              <MaterialCommunityIcons name="shield" size={32} color={COLORS.greenAccent} style={StyleSheet.absoluteFill} />
-            </View>
-          </View>
-          <View style={styles.challengeInfo}>
-            <View style={styles.challengeRow}>
-              <Text style={styles.challengeName}>Conquer Olympus</Text>
-              <Text style={styles.challengeMile}>1.6 Mile left</Text>
-            </View>
-            <View style={styles.progressTrackOuter}>
-              <View style={[styles.progressTrackFill, { width: '78%' }]} />
-            </View>
-          </View>
-        </View>
+
 
         {/* Week Section */}
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Week</Text>
-            <TouchableOpacity>
+            <TouchableOpacity onPress={() => router.push(`/report-details?metric=${activeTab}&period=Week`)}>
               <Text style={styles.moreLink}>More</Text>
             </TouchableOpacity>
           </View>
@@ -397,7 +381,10 @@ export default function ReportScreen() {
                 <TouchableOpacity
                   key={tab}
                   style={[styles.tabBtn, activeTab === tab && styles.tabBtnActive]}
-                  onPress={() => setActiveTab(tab)}
+                  onPress={() => {
+                    setActiveTab(tab);
+                    router.push(`/report-details?metric=${tab}&period=Week`);
+                  }}
                 >
                   <Text style={[styles.tabText, activeTab === tab && styles.tabTextActive]}>
                     {tab}
@@ -412,7 +399,7 @@ export default function ReportScreen() {
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Today</Text>
-            <TouchableOpacity>
+            <TouchableOpacity onPress={() => router.push(`/report-details?metric=${activeTab}&period=Day`)}>
               <Text style={styles.moreLink}>More</Text>
             </TouchableOpacity>
           </View>
@@ -431,17 +418,16 @@ export default function ReportScreen() {
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Month</Text>
-            <TouchableOpacity>
+            <TouchableOpacity onPress={() => router.push(`/report-details?metric=${activeTab}&period=Month`)}>
               <Text style={styles.moreLink}>More</Text>
             </TouchableOpacity>
           </View>
 
           <View style={styles.chartCard}>
-            <Text style={styles.yAxisTop}>10000</Text>
             <BarChart
               data={monthData}
               goalLine={dailyGoal}
-              maxValue={Math.max(...monthData.map((d) => d.steps), 10000) * 1.1}
+              maxValue={Math.max(...monthData.map((d) => d.steps), dailyGoal, 1) * 1.1}
               barWidth={22}
               height={120}
               showGoalBadge={true}
@@ -456,9 +442,9 @@ export default function ReportScreen() {
           </View>
 
           <View style={styles.chartCard}>
-            <Text style={styles.yAxisTop}>20000</Text>
             <BarChart
               data={yearData.map((d) => ({ label: d.label, steps: d.steps }))}
+              maxValue={Math.max(...yearData.map((d) => d.steps), 1) * 1.1}
               barWidth={24}
               height={130}
               showGoalBadge={false}

@@ -15,7 +15,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import Svg, { Rect, Line, Text as SvgText, G, Path } from 'react-native-svg';
 import { COLORS, SPACING } from '../constants/theme';
-import { useSettings } from '../context/SettingsContext';
+import { useSettings, StepRecord } from '../context/SettingsContext';
 
 
 type Period = 'Day' | 'Week' | 'Month' | 'Year';
@@ -24,11 +24,11 @@ type MetricTab = 'Step' | 'Calorie' | 'Time' | 'Distance';
 export default function ReportDetailsScreen() {
   const router = useRouter();
   const { width } = useWindowDimensions();
-  const { metric } = useLocalSearchParams<{ metric?: MetricTab }>();
-  const { records, dailyGoal, distanceUnit } = useSettings();
+  const { metric, period } = useLocalSearchParams<{ metric?: MetricTab; period?: Period }>();
+  const { records, dailyGoal, distanceUnit, weight, height } = useSettings();
 
   const [activeMetric, setActiveMetric] = useState<MetricTab>(metric || 'Step');
-  const [selectedPeriod, setSelectedPeriod] = useState<Period>('Week');
+  const [selectedPeriod, setSelectedPeriod] = useState<Period>(period || 'Week');
   const [dropdownVisible, setDropdownVisible] = useState(false);
   const [editModalVisible, setEditModalVisible] = useState(false);
   const [referenceDate, setReferenceDate] = useState(new Date());
@@ -81,9 +81,120 @@ export default function ReportDetailsScreen() {
     }
   };
 
-  // Mock data for now, will replace with real calculations later
-  const displayValue = activeMetric === 'Time' ? '1h 8m' : activeMetric === 'Step' ? '4,500' : '0.0';
-  const displayAverage = activeMetric === 'Time' ? '0h 11m' : '0';
+  const getMetricValue = (record: StepRecord) => {
+    switch (activeMetric) {
+      case 'Calorie':
+        return record.calories;
+      case 'Time':
+        return record.activeDuration; // in minutes
+      case 'Distance':
+        return record.distance;
+      default:
+        return record.steps;
+    }
+  };
+
+
+
+  const { displayValue, displayAverage } = useMemo(() => {
+    const now = referenceDate;
+    let total = 0;
+    let count = 1;
+    
+    if (selectedPeriod === 'Day') {
+      const record = records.find(r => 
+        r.date.getFullYear() === now.getFullYear() && 
+        r.date.getMonth() === now.getMonth() && 
+        r.date.getDate() === now.getDate()
+      );
+      if (record) {
+        total = getMetricValue(record);
+      } else {
+        total = 0;
+      }
+      count = 1;
+    } else if (selectedPeriod === 'Week') {
+      let sum = 0;
+      for (let i = 0; i < 7; i++) {
+        const d = new Date(now);
+        d.setDate(d.getDate() - i);
+        const record = records.find(r => 
+          r.date.getFullYear() === d.getFullYear() && 
+          r.date.getMonth() === d.getMonth() && 
+          r.date.getDate() === d.getDate()
+        );
+        if (record) {
+          sum += getMetricValue(record);
+        } else {
+          sum += 0;
+        }
+      }
+      total = sum;
+      count = 7;
+    } else if (selectedPeriod === 'Month') {
+      const monthRecords = records.filter(r => 
+        r.date.getFullYear() === now.getFullYear() && 
+        r.date.getMonth() === now.getMonth()
+      );
+      const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+      if (monthRecords.length > 0) {
+        total = monthRecords.reduce((sum, r) => sum + getMetricValue(r), 0);
+      } else {
+        total = 0;
+      }
+      count = daysInMonth;
+    } else if (selectedPeriod === 'Year') {
+      const yearRecords = records.filter(r => 
+        r.date.getFullYear() === now.getFullYear()
+      );
+      if (yearRecords.length > 0) {
+        total = yearRecords.reduce((sum, r) => sum + getMetricValue(r), 0);
+      } else {
+        total = 0;
+      }
+      const isLeap = (year: number) => (year % 4 === 0 && year % 100 !== 0) || (year % 400 === 0);
+      count = isLeap(now.getFullYear()) ? 366 : 365;
+    }
+
+    const formatValue = (val: number) => {
+      if (activeMetric === 'Time') {
+        const hrs = Math.floor(val / 60);
+        const mins = Math.round(val % 60);
+        if (hrs > 0) {
+          return `${hrs}h ${mins}m`;
+        }
+        return `${mins}m`;
+      } else if (activeMetric === 'Distance') {
+        return `${val.toFixed(2)} ${distanceUnit === 'Mile' ? 'Miles' : 'Kms'}`;
+      } else if (activeMetric === 'Calorie') {
+        return `${Math.round(val).toLocaleString()} kcal`;
+      } else {
+        return Math.round(val).toLocaleString();
+      }
+    };
+
+    const formatAverage = (val: number) => {
+      if (activeMetric === 'Time') {
+        const hrs = Math.floor(val / 60);
+        const mins = Math.round(val % 60);
+        if (hrs > 0) {
+          return `${hrs}h ${mins}m`;
+        }
+        return `${mins}m`;
+      } else if (activeMetric === 'Distance') {
+        return `${val.toFixed(2)} ${distanceUnit === 'Mile' ? 'mi' : 'km'}`;
+      } else if (activeMetric === 'Calorie') {
+        return `${Math.round(val).toLocaleString()} kcal`;
+      } else {
+        return Math.round(val).toLocaleString();
+      }
+    };
+
+    return {
+      displayValue: formatValue(total),
+      displayAverage: formatAverage(total / count),
+    };
+  }, [activeMetric, selectedPeriod, referenceDate, records, height, weight, distanceUnit]);
 
   const periods: Period[] = ['Day', 'Week', 'Month', 'Year'];
   const metrics: MetricTab[] = ['Step', 'Calorie', 'Time', 'Distance'];
@@ -101,12 +212,12 @@ export default function ReportDetailsScreen() {
         r.date.getMonth() === now.getMonth() && 
         r.date.getDate() === now.getDate()
       );
-      const totalSteps = todayRecord ? todayRecord.steps : 0;
+      const totalVal = todayRecord ? getMetricValue(todayRecord) : 0;
       data.push({ label: '00:00', value: 0 });
-      data.push({ label: '06:00', value: Math.floor(totalSteps * 0.2) });
-      data.push({ label: '12:00', value: Math.floor(totalSteps * 0.4) });
-      data.push({ label: '18:00', value: Math.floor(totalSteps * 0.3) });
-      data.push({ label: '23:59', value: Math.floor(totalSteps * 0.1) });
+      data.push({ label: '06:00', value: Number((totalVal * 0.2).toFixed(1)) });
+      data.push({ label: '12:00', value: Number((totalVal * 0.4).toFixed(1)) });
+      data.push({ label: '18:00', value: Number((totalVal * 0.3).toFixed(1)) });
+      data.push({ label: '23:59', value: Number((totalVal * 0.1).toFixed(1)) });
     } else if (selectedPeriod === 'Week') {
       const weekdayLetters = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
       for (let i = 6; i >= 0; i--) {
@@ -119,13 +230,12 @@ export default function ReportDetailsScreen() {
           r.date.getMonth() === d.getMonth() && 
           r.date.getDate() === d.getDate()
         );
-        // Ensure some dummy data so it looks like Image 2 if records are empty
-        const dummyVal = [1810, 100, 120, 1240, 2160, 4310, 5250][6 - i];
-        data.push({ label: dayName, value: record ? record.steps : dummyVal, originalDate: d });
+        const stepsVal = record ? getMetricValue(record) : 0;
+        data.push({ label: dayName, value: stepsVal, originalDate: d });
       }
     } else if (selectedPeriod === 'Month') {
       const labels = ['1', '6', '12', '18', '24', '30'];
-      labels.forEach(dayNumStr => {
+      labels.forEach((dayNumStr, i) => {
         const dayNum = parseInt(dayNumStr, 10);
         const d = new Date(now.getFullYear(), now.getMonth(), dayNum);
         const record = records.find(r => 
@@ -133,20 +243,22 @@ export default function ReportDetailsScreen() {
           r.date.getMonth() === d.getMonth() && 
           r.date.getDate() === d.getDate()
         );
-        // Using some mock values if record doesn't exist just to show the graph working
-        data.push({ label: dayNumStr, value: record ? record.steps : (Math.random() > 0.5 ? 3000 : 5000) });
+        const val = record ? getMetricValue(record) : 0;
+        data.push({ label: dayNumStr, value: val });
       });
     } else if (selectedPeriod === 'Year') {
       const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
       months.forEach((monthStr, i) => {
         let sum = 0;
+        let hasData = false;
         records.forEach(r => {
           if (r.date.getFullYear() === now.getFullYear() && r.date.getMonth() === i) {
-            sum += r.steps;
+            sum += getMetricValue(r);
+            hasData = true;
           }
         });
-        // Mock some data if 0 to show it's functioning visually
-        data.push({ label: monthStr, value: sum > 0 ? sum : 40000 + i * 2000 });
+        const val = hasData ? sum : 0;
+        data.push({ label: monthStr, value: val });
       });
     }
     return data;
@@ -157,11 +269,24 @@ export default function ReportDetailsScreen() {
   
   // Calculate dynamic tick interval to avoid blurriness
   let tickInterval = 2000;
-  if (maxSteps > 10000) {
-    const tickCount = 4;
-    tickInterval = Math.ceil(maxSteps / (tickCount - 1));
-    const magnitude = Math.pow(10, Math.floor(Math.log10(tickInterval || 1)));
-    tickInterval = Math.ceil(tickInterval / magnitude) * magnitude;
+  if (maxSteps > 0) {
+    if (activeMetric === 'Calorie') {
+      tickInterval = 100;
+    } else if (activeMetric === 'Distance') {
+      tickInterval = 1;
+    } else if (activeMetric === 'Time') {
+      tickInterval = 30; // 30 mins
+    } else {
+      tickInterval = 2000;
+    }
+    
+    if (maxSteps > tickInterval * 4) {
+      const tickCount = 4;
+      tickInterval = Math.ceil(maxSteps / (tickCount - 1));
+      const magnitude = Math.pow(10, Math.floor(Math.log10(tickInterval || 1)));
+      const base = magnitude > 1 ? magnitude / 2 : 1;
+      tickInterval = Math.ceil(tickInterval / base) * base;
+    }
   }
   const maxTick = Math.max(Math.ceil(maxSteps / tickInterval) * tickInterval, tickInterval * 2);
   const yTicks = [];
@@ -260,7 +385,11 @@ export default function ReportDetailsScreen() {
                 <G key={`y-${index}`}>
                   <Line x1="45" y1={String(yPos)} x2={String(width - 32)} y2={String(yPos)} stroke="rgba(255,255,255,0.05)" strokeWidth="1" />
                   <SvgText x="35" y={String(yPos + 4)} fill={COLORS.textSecondary} fontSize="10" textAnchor="end">
-                    {tick >= 1000 ? `${parseFloat((tick / 1000).toFixed(1))}k` : String(tick)}
+                    {activeMetric === 'Distance' 
+                      ? tick.toFixed(1) 
+                      : tick >= 1000 
+                      ? `${parseFloat((tick / 1000).toFixed(1))}k` 
+                      : String(tick)}
                   </SvgText>
                 </G>
               );
@@ -274,7 +403,13 @@ export default function ReportDetailsScreen() {
               const isSelected = selectedIndex === i;
               
               // Value format: 1.2k, 5.2k, etc
-              const displayVal = data.value >= 1000 ? (data.value / 1000).toFixed(2) : data.value;
+              const displayVal = activeMetric === 'Distance'
+                ? data.value.toFixed(2)
+                : activeMetric === 'Time'
+                ? (data.value >= 60 ? `${Math.floor(data.value / 60)}h ${Math.round(data.value % 60)}m` : `${Math.round(data.value)}m`)
+                : data.value >= 1000
+                ? (data.value / 1000).toFixed(1) + 'k'
+                : Math.round(data.value);
 
               return (
                 <G key={`x-${i}`} onPress={() => setSelectedIndex(isSelected ? null : i)}>
@@ -316,8 +451,14 @@ export default function ReportDetailsScreen() {
                     <G>
                       <Line x1={String(xPos)} y1={String(220 - Math.max(barHeight, 4))} x2={String(xPos)} y2="45" stroke={COLORS.greenAccent} strokeWidth="1" />
                       <Rect x={String(xPos - 40)} y="15" width="80" height="36" fill={COLORS.greenAccent} rx="6" />
-                      <SvgText x={String(xPos)} y="30" fill="#fff" fontSize="12" fontWeight="bold" textAnchor="middle">
-                        {String(displayVal)} {activeMetric === 'Distance' ? distanceUnit : ''}
+                      <SvgText x={String(xPos)} y="30" fill="#fff" fontSize="11" fontWeight="bold" textAnchor="middle">
+                        {activeMetric === 'Distance'
+                          ? `${data.value.toFixed(2)} ${distanceUnit === 'Mile' ? 'mi' : 'km'}`
+                          : activeMetric === 'Time'
+                          ? (data.value >= 60 ? `${Math.floor(data.value / 60)}h ${Math.round(data.value % 60)}m` : `${Math.round(data.value)}m`)
+                          : activeMetric === 'Calorie'
+                          ? `${Math.round(data.value)} kcal`
+                          : `${Math.round(data.value)} steps`}
                       </SvgText>
                       <SvgText x={String(xPos)} y="44" fill="rgba(255,255,255,0.8)" fontSize="9" textAnchor="middle">
                         {data.originalDate ? data.originalDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : String(data.label)}
@@ -379,72 +520,7 @@ export default function ReportDetailsScreen() {
           ))}
         </View>
 
-        {/* Scrollable details: Statistics and Best Day */}
-        <Text style={styles.sectionHeading}>Statistics (Jul 8)</Text>
-        <View style={styles.statsRow}>
-          <View style={styles.statCard}>
-            <MaterialCommunityIcons name="run" size={24} color={COLORS.greenAccent} style={styles.statIcon} />
-            <Text style={styles.statTitle}>Most Active</Text>
-            <Text style={styles.statMainValue}>4668 <Text style={styles.statValueUnit}>Steps</Text></Text>
-            <Text style={styles.statSubText}>19:00 - 19:59</Text>
-          </View>
-          <View style={styles.statCard}>
-            <MaterialCommunityIcons name="coffee" size={24} color="#4DB6AC" style={styles.statIcon} />
-            <Text style={styles.statTitle}>Most Relaxing</Text>
-            <Text style={styles.statMainValue}>10 <Text style={styles.statValueUnit}>Steps</Text></Text>
-            <Text style={styles.statSubText}>14:00 - 14:59</Text>
-          </View>
-        </View>
 
-        <Text style={styles.sectionHeading}>Best Day</Text>
-        <View style={styles.bestDayCard}>
-          <Text style={styles.bestDaySubtitle}>Since Jul 7, 2026, you've walked 46430 steps.</Text>
-          
-          <View style={styles.bestDayRow}>
-            <View style={[styles.bestDayRank, { backgroundColor: '#F1C40F' }]}>
-              <Text style={styles.bestDayRankText}>1</Text>
-            </View>
-            <View style={styles.bestDayDetails}>
-              <View style={styles.bestDayInfoRow}>
-                <Text style={styles.bestDayDate}>Jul 8, 2026</Text>
-                <Text style={styles.bestDayValue}>10532 <Text style={styles.bestDayUnit}>Steps</Text></Text>
-              </View>
-              <View style={styles.progressBarTrack}>
-                <View style={[styles.progressBarFill, { width: '90%' }]} />
-              </View>
-            </View>
-          </View>
-
-          <View style={styles.bestDayRow}>
-            <View style={[styles.bestDayRank, { backgroundColor: '#BDC3C7' }]}>
-              <Text style={styles.bestDayRankText}>2</Text>
-            </View>
-            <View style={styles.bestDayDetails}>
-              <View style={styles.bestDayInfoRow}>
-                <Text style={styles.bestDayDate}>Jul 7, 2026</Text>
-                <Text style={styles.bestDayValue}>9720 <Text style={styles.bestDayUnit}>Steps</Text></Text>
-              </View>
-              <View style={styles.progressBarTrack}>
-                <View style={[styles.progressBarFill, { width: '80%' }]} />
-              </View>
-            </View>
-          </View>
-
-          <View style={styles.bestDayRow}>
-            <View style={[styles.bestDayRank, { backgroundColor: '#E67E22' }]}>
-              <Text style={styles.bestDayRankText}>3</Text>
-            </View>
-            <View style={styles.bestDayDetails}>
-              <View style={styles.bestDayInfoRow}>
-                <Text style={styles.bestDayDate}>Jul 18, 2026</Text>
-                <Text style={styles.bestDayValue}>7294 <Text style={styles.bestDayUnit}>Steps</Text></Text>
-              </View>
-              <View style={styles.progressBarTrack}>
-                <View style={[styles.progressBarFill, { width: '60%' }]} />
-              </View>
-            </View>
-          </View>
-        </View>
         
         {/* Footer padding */}
         <View style={{ height: 40 }} />

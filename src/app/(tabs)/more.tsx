@@ -85,7 +85,7 @@ export default function MoreScreen() {
       'Enter your weight (lbs):',
       (text) => {
         const val = parseFloat(text);
-        if (!isNaN(val) && val > 0) setWeight(val);
+        if (!isNaN(val) && val > 0) setWeight(val / 2.20462);
       },
       'plain-text',
       (weight * 2.20462).toFixed(1),

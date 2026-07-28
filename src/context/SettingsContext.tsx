@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { Platform, PermissionsAndroid, Alert } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // react-native-accurate-step-counter uses native Android/iOS hardware.
 // It does not work on web — guard every call with isNativeDevice.
@@ -17,6 +18,41 @@ if (isNativeDevice) {
   stopCounter = StepCounter.stopCounter;
 }
 
+// ─── AsyncStorage Keys ────────────────────────────────────────────────────────
+const STORAGE_KEYS = {
+  RECORDS: '@stepcounter/records',
+  DAILY_GOAL: '@stepcounter/dailyGoal',
+  WATER_INTAKE: '@stepcounter/waterIntake',
+  SELECTED_GOAL: '@stepcounter/selectedGoal',
+  WEIGHT: '@stepcounter/weight',
+  HEIGHT: '@stepcounter/height',
+  DISTANCE_UNIT: '@stepcounter/distanceUnit',
+  WEIGHT_HISTORY: '@stepcounter/weightHistory',
+  SESSION_BASE_STEPS: '@stepcounter/sessionBaseSteps',
+  SESSION_DATE: '@stepcounter/sessionDate',
+};
+
+// ─── Helper: persist a value ──────────────────────────────────────────────────
+async function persist(key: string, value: unknown) {
+  try {
+    await AsyncStorage.setItem(key, JSON.stringify(value));
+  } catch (e) {
+    console.warn('[Storage] Failed to save', key, e);
+  }
+}
+
+// ─── Helper: load a value ─────────────────────────────────────────────────────
+async function load<T>(key: string, fallback: T): Promise<T> {
+  try {
+    const raw = await AsyncStorage.getItem(key);
+    if (raw === null) return fallback;
+    return JSON.parse(raw) as T;
+  } catch (e) {
+    console.warn('[Storage] Failed to load', key, e);
+    return fallback;
+  }
+}
+
 export type DistanceUnit = 'Mile' | 'Km';
 
 export interface StepRecord {
@@ -26,6 +62,17 @@ export interface StepRecord {
   distance: number;
   activeDuration: number; // in minutes
   date: Date;
+  note?: string;
+}
+
+// Raw shape as stored in JSON (dates are strings)
+interface StepRecordRaw {
+  id: string;
+  steps: number;
+  calories: number;
+  distance: number;
+  activeDuration: number;
+  date: string;
   note?: string;
 }
 
@@ -72,6 +119,9 @@ interface SettingsContextType {
   isCounterRunning: boolean;
   liveStepsToday: number;
 
+  // Loading state (true until AsyncStorage is read)
+  isLoaded: boolean;
+
   // User profile
   weight: number; // in kg
   height: number; // in cm
@@ -92,6 +142,7 @@ interface SettingsContextType {
   setHeight: (h: number) => void;
   setDistanceUnit: (unit: DistanceUnit) => void;
   addWeightRecord: (weightKg: number, dateIso?: string) => void;
+  clearWeightHistory: () => void;
   resetAllData: () => void;
 }
 
@@ -104,63 +155,8 @@ const makeDate = (daysAgo: number, hour: number, minute: number) => {
   return d;
 };
 
-// ─── Seed records for the previous 6 days only (today is handled by the live sensor) ───
-const SEED_RECORDS: StepRecord[] = [
-  {
-    id: 'seed-1',
-    steps: 6681,
-    calories: 267.2,
-    distance: 3.12,
-    activeDuration: 53,
-    date: makeDate(1, 17, 15),
-    note: 'Evening walk',
-  },
-  {
-    id: 'seed-2',
-    steps: 6400,
-    calories: 256.0,
-    distance: 2.98,
-    activeDuration: 51,
-    date: makeDate(2, 16, 45),
-    note: 'Walk back from work',
-  },
-  {
-    id: 'seed-3',
-    steps: 5900,
-    calories: 236.0,
-    distance: 2.75,
-    activeDuration: 47,
-    date: makeDate(3, 10, 0),
-    note: 'Park walk',
-  },
-  {
-    id: 'seed-4',
-    steps: 3800,
-    calories: 152.0,
-    distance: 1.77,
-    activeDuration: 30,
-    date: makeDate(4, 15, 30),
-    note: 'Shopping run',
-  },
-  {
-    id: 'seed-5',
-    steps: 6200,
-    calories: 248.0,
-    distance: 2.89,
-    activeDuration: 49,
-    date: makeDate(5, 18, 0),
-    note: 'After dinner stroll',
-  },
-  {
-    id: 'seed-6',
-    steps: 5100,
-    calories: 204.0,
-    distance: 2.38,
-    activeDuration: 40,
-    date: makeDate(6, 12, 15),
-    note: 'Lunch walk',
-  },
-];
+// ─── No seed records, start fresh ───
+const SEED_RECORDS: StepRecord[] = [];
 
 // ─── Helper: check if two Date objects are the same calendar day ───
 const isSameDay = (a: Date, b: Date) =>
@@ -168,24 +164,36 @@ const isSameDay = (a: Date, b: Date) =>
   a.getMonth() === b.getMonth() &&
   a.getDate() === b.getDate();
 
+// ─── Helper: today's date string YYYY-MM-DD (local timezone safe) ───
+const todayISO = () => {
+  const date = new Date();
+  const offset = date.getTimezoneOffset();
+  const localDate = new Date(date.getTime() - offset * 60 * 1000);
+  return localDate.toISOString().split('T')[0];
+};
+
+// ─── Deserialise records: parse date strings back to Date objects ───
+function deserialiseRecords(raw: StepRecordRaw[]): StepRecord[] {
+  return raw.map((r) => ({ ...r, date: new Date(r.date) }));
+}
+
 const SettingsContext = createContext<SettingsContextType | undefined>(undefined);
 
 export function SettingsProvider({ children }: { children: React.ReactNode }) {
-  const [records, setRecords] = useState<StepRecord[]>(SEED_RECORDS);
-  const [dailyGoal, setDailyGoal] = useState(6000);
-  const [isPaused, setIsPaused] = useState(false);
-  const [waterIntake, setWaterIntake] = useState(0);
+  const [isLoaded, setIsLoaded] = useState(false);
+  const [records, setRecordsState] = useState<StepRecord[]>(SEED_RECORDS);
+  const [dailyGoal, setDailyGoalState] = useState(6000);
+  const [isPaused, setIsPausedState] = useState(false);
+  const [waterIntake, setWaterIntakeState] = useState(0);
   const [waterGoal] = useState(24);
-  const [selectedGoal, setSelectedGoal] = useState<WalkingGoal>(defaultGoal);
-  const [weight, setWeight] = useState(70);
-  const [height, setHeight] = useState(175);
-  const [distanceUnit, setDistanceUnit] = useState<DistanceUnit>('Mile');
+  const [selectedGoal, setSelectedGoalState] = useState<WalkingGoal>(defaultGoal);
+  const [weight, setWeightState] = useState(70);
+  const [height, setHeightState] = useState(175);
+  const [distanceUnit, setDistanceUnitState] = useState<DistanceUnit>('Mile');
   const [isCounterRunning, setIsCounterRunning] = useState(false);
-  // Start with empty weight history — user builds it by tapping ADD
-  const [weightHistory, setWeightHistory] = useState<WeightRecord[]>([]);
+  const [weightHistory, setWeightHistoryState] = useState<WeightRecord[]>([]);
 
   // liveSteps holds the raw step count from the sensor since the counter last started.
-  // We keep it separate so we don't double-count on restarts.
   const [liveSteps, setLiveSteps] = useState(0);
 
   // Accumulated steps from previous sessions today (e.g. after pause/resume).
@@ -209,8 +217,135 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
     };
   };
 
+  // ─── Setters that also persist ────────────────────────────────────────────────
+  const setRecords = (updater: StepRecord[] | ((prev: StepRecord[]) => StepRecord[])) => {
+    setRecordsState((prev) => {
+      const next = typeof updater === 'function' ? updater(prev) : updater;
+      persist(STORAGE_KEYS.RECORDS, next);
+      return next;
+    });
+  };
+
+  const setDailyGoal = (goal: number) => {
+    setDailyGoalState(goal);
+    persist(STORAGE_KEYS.DAILY_GOAL, goal);
+  };
+
+  const setIsPaused = (paused: boolean) => {
+    setIsPausedState(paused);
+    // Note: isPaused itself is intentionally NOT persisted across restarts —
+    // the counter always starts fresh on app open.
+  };
+
+  const setWaterIntake = (value: number | ((prev: number) => number)) => {
+    setWaterIntakeState((prev) => {
+      const next = typeof value === 'function' ? value(prev) : value;
+      // Reset water at midnight — only persist if it's still the same day
+      persist(STORAGE_KEYS.WATER_INTAKE, { value: next, date: todayISO() });
+      return next;
+    });
+  };
+
+  const setSelectedGoal = (goal: WalkingGoal) => {
+    setSelectedGoalState(goal);
+    persist(STORAGE_KEYS.SELECTED_GOAL, goal);
+  };
+
+  const setWeight = (w: number) => {
+    // When weight is set from Settings or elsewhere, also record it in history
+    addWeightRecord(w);
+  };
+
+  const setHeight = (h: number) => {
+    setHeightState(h);
+    persist(STORAGE_KEYS.HEIGHT, h);
+  };
+
+  const setDistanceUnit = (unit: DistanceUnit) => {
+    setDistanceUnitState(unit);
+    persist(STORAGE_KEYS.DISTANCE_UNIT, unit);
+  };
+
+  const setWeightHistory = (updater: WeightRecord[] | ((prev: WeightRecord[]) => WeightRecord[])) => {
+    setWeightHistoryState((prev) => {
+      const next = typeof updater === 'function' ? updater(prev) : updater;
+      persist(STORAGE_KEYS.WEIGHT_HISTORY, next);
+      return next;
+    });
+  };
+
+  // ─── Load all persisted state on first mount ──────────────────────────────────
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const [
+        storedRecordsRaw,
+        storedGoal,
+        storedWaterRaw,
+        storedSelectedGoal,
+        storedWeight,
+        storedHeight,
+        storedDistanceUnit,
+        storedWeightHistory,
+        storedSessionInfo,
+      ] = await Promise.all([
+        load<StepRecordRaw[] | null>(STORAGE_KEYS.RECORDS, null),
+        load<number | null>(STORAGE_KEYS.DAILY_GOAL, null),
+        load<{ value: number; date: string } | null>(STORAGE_KEYS.WATER_INTAKE, null),
+        load<WalkingGoal | null>(STORAGE_KEYS.SELECTED_GOAL, null),
+        load<number | null>(STORAGE_KEYS.WEIGHT, null),
+        load<number | null>(STORAGE_KEYS.HEIGHT, null),
+        load<DistanceUnit | null>(STORAGE_KEYS.DISTANCE_UNIT, null),
+        load<WeightRecord[]>(STORAGE_KEYS.WEIGHT_HISTORY, []),
+        load<{ steps: number; date: string } | null>(STORAGE_KEYS.SESSION_BASE_STEPS, null),
+      ]);
+
+      if (cancelled) return;
+
+      // ── Records ──────────────────────────────────────────────────────────────
+      if (storedRecordsRaw && storedRecordsRaw.length > 0) {
+        setRecordsState(deserialiseRecords(storedRecordsRaw));
+      }
+      // else keep SEED_RECORDS (first launch)
+
+      // ── Settings ─────────────────────────────────────────────────────────────
+      if (storedGoal !== null) setDailyGoalState(storedGoal);
+      if (storedSelectedGoal !== null) setSelectedGoalState(storedSelectedGoal);
+      if (storedWeight !== null) setWeightState(storedWeight);
+      if (storedHeight !== null) setHeightState(storedHeight);
+      if (storedDistanceUnit !== null) setDistanceUnitState(storedDistanceUnit);
+      if (storedWeightHistory.length > 0) setWeightHistoryState(storedWeightHistory);
+
+      // ── Water intake — reset if it's a new day ────────────────────────────────
+      if (storedWaterRaw !== null) {
+        if (storedWaterRaw.date === todayISO()) {
+          setWaterIntakeState(storedWaterRaw.value);
+        } else {
+          // New day: clear water and persist the reset
+          persist(STORAGE_KEYS.WATER_INTAKE, { value: 0, date: todayISO() });
+        }
+      }
+
+      // ── Today's accumulated step base (resets on new day) ─────────────────────
+      if (storedSessionInfo !== null && storedSessionInfo.date === todayISO()) {
+        sessionBaseSteps.current = storedSessionInfo.steps;
+      } else if (storedSessionInfo !== null && storedSessionInfo.date !== todayISO()) {
+        // New day: reset session base
+        sessionBaseSteps.current = 0;
+        persist(STORAGE_KEYS.SESSION_BASE_STEPS, { steps: 0, date: todayISO() });
+      }
+
+      setIsLoaded(true);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // ─── Keep historical seed records in sync when profile changes ───
   useEffect(() => {
+    if (!isLoaded) return;
     setRecords((prev) =>
       prev.map((r) => {
         // Skip today's live record — it will be kept in sync separately
@@ -315,13 +450,16 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
       stopCounter();
     }
     // Save whatever the sensor reported into the base so it isn't lost on next start
-    sessionBaseSteps.current += liveSteps;
+    const newBase = sessionBaseSteps.current + liveSteps;
+    sessionBaseSteps.current = newBase;
+    persist(STORAGE_KEYS.SESSION_BASE_STEPS, { steps: newBase, date: todayISO() });
     setLiveSteps(0);
     setIsCounterRunning(false);
   };
 
-  // ─── Start counter on mount; clean up on unmount ───
+  // ─── Start counter on mount (after storage is loaded); clean up on unmount ───
   useEffect(() => {
+    if (!isLoaded) return;
     if (!isPaused) {
       startSensor();
     }
@@ -329,10 +467,11 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
       // Always stop cleanly when the provider unmounts
       if (isNativeDevice && stopCounter) stopCounter();
     };
-  }, []); // Run once on mount
+  }, [isLoaded]); // Run once after storage load
 
   // ─── React to pause/resume toggling ───
   useEffect(() => {
+    if (!isLoaded) return;
     if (isPaused) {
       stopSensor();
     } else {
@@ -408,8 +547,8 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
     });
   };
 
-  const addWeightRecord = (weightKg: number, dateIso?: string) => {
-    const today = dateIso ?? new Date().toISOString().split('T')[0];
+  function addWeightRecord(weightKg: number, dateIso?: string) {
+    const today = dateIso ?? todayISO();
     setWeightHistory((prev) => {
       // Replace entry for that date if it already exists, otherwise append
       const idx = prev.findIndex((r) => r.date === today);
@@ -423,22 +562,35 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
         (a, b) => a.date.localeCompare(b.date)
       );
     });
-    setWeight(weightKg);
+    setWeightState(weightKg);
+    persist(STORAGE_KEYS.WEIGHT, weightKg);
+  }
+
+  const clearWeightHistory = () => {
+    setWeightHistoryState([]);
+    persist(STORAGE_KEYS.WEIGHT_HISTORY, []);
   };
 
   const resetAllData = () => {
     stopSensor();
     sessionBaseSteps.current = 0;
     setLiveSteps(0);
-    setRecords(SEED_RECORDS);
-    setDailyGoal(6000);
-    setIsPaused(false);
-    setWaterIntake(0);
-    setSelectedGoal(defaultGoal);
-    setWeight(70);
-    setHeight(175);
-    setDistanceUnit('Mile');
-    setWeightHistory([]);
+
+    // Clear all persisted data
+    AsyncStorage.multiRemove(Object.values(STORAGE_KEYS)).catch((e) =>
+      console.warn('[Storage] Failed to clear data', e)
+    );
+
+    setRecordsState(SEED_RECORDS);
+    setDailyGoalState(6000);
+    setIsPausedState(false);
+    setWaterIntakeState(0);
+    setSelectedGoalState(defaultGoal);
+    setWeightState(70);
+    setHeightState(175);
+    setDistanceUnitState('Mile');
+    setWeightHistoryState([]);
+
     // Restart sensor after reset
     startSensor();
   };
@@ -458,6 +610,7 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
         weightHistory,
         isCounterRunning,
         liveStepsToday,
+        isLoaded,
         addSteps,
         updateSteps,
         deleteSteps,
@@ -469,6 +622,7 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
         setHeight,
         setDistanceUnit,
         addWeightRecord,
+        clearWeightHistory,
         resetAllData,
       }}
     >
