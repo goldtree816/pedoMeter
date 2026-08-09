@@ -1,6 +1,18 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
-import { Platform, PermissionsAndroid, Alert } from 'react-native';
+import { Platform, PermissionsAndroid, Alert, NativeModules } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Notifications from 'expo-notifications';
+
+// Set up notification handler so alerts show even when the app is foregrounded
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+    shouldShowBanner: true,
+    shouldShowList: true,
+  }),
+});
 
 // react-native-accurate-step-counter uses native Android/iOS hardware.
 // It does not work on web — guard every call with isNativeDevice.
@@ -28,8 +40,8 @@ const STORAGE_KEYS = {
   HEIGHT: '@stepcounter/height',
   DISTANCE_UNIT: '@stepcounter/distanceUnit',
   WEIGHT_HISTORY: '@stepcounter/weightHistory',
-  SESSION_BASE_STEPS: '@stepcounter/sessionBaseSteps',
-  SESSION_DATE: '@stepcounter/sessionDate',
+  // SESSION_BASE_STEPS is now handled natively by SharedPreferences in RNWalkCounterService
+  REMINDERS_ENABLED: '@stepcounter/remindersEnabled',
 };
 
 // ─── Helper: persist a value ──────────────────────────────────────────────────
@@ -130,6 +142,10 @@ interface SettingsContextType {
   // Weight history for graph
   weightHistory: WeightRecord[];
 
+  // Reminders
+  remindersEnabled: boolean;
+  toggleReminders: (enabled: boolean) => Promise<void>;
+
   // Actions
   addSteps: (steps: number, date: Date, note?: string) => void;
   updateSteps: (id: string, steps: number, date: Date, note?: string) => void;
@@ -192,15 +208,17 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
   const [distanceUnit, setDistanceUnitState] = useState<DistanceUnit>('Mile');
   const [isCounterRunning, setIsCounterRunning] = useState(false);
   const [weightHistory, setWeightHistoryState] = useState<WeightRecord[]>([]);
+  const [remindersEnabled, setRemindersEnabledState] = useState(false);
 
-  // liveSteps holds the raw step count from the sensor since the counter last started.
+  // liveSteps holds the raw step count from the sensor since the counter last started this session.
   const [liveSteps, setLiveSteps] = useState(0);
 
-  // Accumulated steps from previous sessions today (e.g. after pause/resume).
-  const sessionBaseSteps = useRef(0);
+  // nativeBaseSteps: the step total loaded from native SharedPreferences on app open.
+  // The native service is the source of truth — we only read this once on startup.
+  const nativeBaseSteps = useRef(0);
 
-  // ─── Derived: total steps for today = base (past sessions) + current sensor reading ───
-  const liveStepsToday = sessionBaseSteps.current + liveSteps;
+  // ─── Derived: total steps for today = native base + current session sensor reading ───
+  const liveStepsToday = nativeBaseSteps.current + liveSteps;
 
   // ─── Metric calculations ───
   const calculateMetrics = (steps: number, h = height, w = weight, unit = distanceUnit) => {
@@ -287,7 +305,7 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
         storedHeight,
         storedDistanceUnit,
         storedWeightHistory,
-        storedSessionInfo,
+        storedRemindersEnabled,
       ] = await Promise.all([
         load<StepRecordRaw[] | null>(STORAGE_KEYS.RECORDS, null),
         load<number | null>(STORAGE_KEYS.DAILY_GOAL, null),
@@ -297,7 +315,7 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
         load<number | null>(STORAGE_KEYS.HEIGHT, null),
         load<DistanceUnit | null>(STORAGE_KEYS.DISTANCE_UNIT, null),
         load<WeightRecord[]>(STORAGE_KEYS.WEIGHT_HISTORY, []),
-        load<{ steps: number; date: string } | null>(STORAGE_KEYS.SESSION_BASE_STEPS, null),
+        load<boolean | null>(STORAGE_KEYS.REMINDERS_ENABLED, null),
       ]);
 
       if (cancelled) return;
@@ -315,6 +333,7 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
       if (storedHeight !== null) setHeightState(storedHeight);
       if (storedDistanceUnit !== null) setDistanceUnitState(storedDistanceUnit);
       if (storedWeightHistory.length > 0) setWeightHistoryState(storedWeightHistory);
+      if (storedRemindersEnabled !== null) setRemindersEnabledState(storedRemindersEnabled);
 
       // ── Water intake — reset if it's a new day ────────────────────────────────
       if (storedWaterRaw !== null) {
@@ -326,13 +345,17 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
         }
       }
 
-      // ── Today's accumulated step base (resets on new day) ─────────────────────
-      if (storedSessionInfo !== null && storedSessionInfo.date === todayISO()) {
-        sessionBaseSteps.current = storedSessionInfo.steps;
-      } else if (storedSessionInfo !== null && storedSessionInfo.date !== todayISO()) {
-        // New day: reset session base
-        sessionBaseSteps.current = 0;
-        persist(STORAGE_KEYS.SESSION_BASE_STEPS, { steps: 0, date: todayISO() });
+      // ── Today's steps — load from native SharedPreferences (source of truth) ──
+      // The native service persists steps independently of AsyncStorage,
+      // so this value is valid even after a force-close or crash.
+      if (Platform.OS === 'android' && NativeModules.RNWalkCounter?.getTodaySteps) {
+        try {
+          const result = await NativeModules.RNWalkCounter.getTodaySteps();
+          nativeBaseSteps.current = result?.steps ?? 0;
+        } catch (e) {
+          console.warn('[StepCounter] Could not read native step count:', e);
+          nativeBaseSteps.current = 0;
+        }
       }
 
       setIsLoaded(true);
@@ -390,29 +413,31 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
 
   // ─── Request Android permission ───
   const requestPermission = async (): Promise<boolean> => {
-    if (Platform.OS !== 'android') return true; // iOS doesn't need this permission for accelerometer
+    if (Platform.OS !== 'android') return true;
     try {
-      const granted = await PermissionsAndroid.request(
-        PermissionsAndroid.PERMISSIONS.ACTIVITY_RECOGNITION,
-        {
-          title: 'Step Counter Permission',
-          message:
-            'This app needs access to your physical activity to count your steps accurately.',
-          buttonPositive: 'Allow',
-          buttonNegative: 'Deny',
+      const permissions = [PermissionsAndroid.PERMISSIONS.ACTIVITY_RECOGNITION];
+      
+      // POST_NOTIFICATIONS is required for Android 13+ (SDK 33+)
+      if (Platform.Version >= 33) {
+        const postNotificationPermission = (PermissionsAndroid.PERMISSIONS as any).POST_NOTIFICATIONS;
+        if (postNotificationPermission) {
+          permissions.push(postNotificationPermission);
         }
-      );
-      return granted === PermissionsAndroid.RESULTS.GRANTED;
-    } catch {
+      }
+      
+      const granted = await PermissionsAndroid.requestMultiple(permissions);
+      const activityGranted = granted[PermissionsAndroid.PERMISSIONS.ACTIVITY_RECOGNITION] === PermissionsAndroid.RESULTS.GRANTED;
+      return activityGranted;
+    } catch (e) {
+      console.warn('[Permission] Failed to request permissions', e);
       return false;
     }
   };
 
   // ─── Start the native step counter ───
   const startSensor = async () => {
-    // Step counting is only available on Android/iOS native builds.
     if (!isNativeDevice || !startCounter) {
-      console.log('[StepCounter] Skipping sensor start — not a native device (web/simulator).');
+      console.log('[StepCounter] Skipping sensor start — not a native device.');
       return;
     }
 
@@ -425,15 +450,17 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    // Reset the per-session counter before starting
+    // Reset the per-session counter before starting.
+    // The native service will pick up from its own SharedPreferences automatically.
     setLiveSteps(0);
 
     startCounter({
-      default_threshold: 15.0,   // Sensitivity — lower = more sensitive
-      default_delay: 150000000,  // Min time between steps (nanoseconds = 150ms)
-      cheatInterval: 3000,       // Lock-out period after shake detected (ms)
+      default_threshold: 15.0,
+      default_delay: 150000000,
+      cheatInterval: 3000,
       onStepCountChange: (stepCount: number) => {
-        // stepCount is cumulative since startCounter was called this session
+        // stepCount is cumulative since startCounter was called this session.
+        // The native service also counts independently; this just updates the UI.
         setLiveSteps(stepCount);
       },
       onCheat: () => {
@@ -449,10 +476,9 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
     if (isNativeDevice && stopCounter) {
       stopCounter();
     }
-    // Save whatever the sensor reported into the base so it isn't lost on next start
-    const newBase = sessionBaseSteps.current + liveSteps;
-    sessionBaseSteps.current = newBase;
-    persist(STORAGE_KEYS.SESSION_BASE_STEPS, { steps: newBase, date: todayISO() });
+    // No need to save to AsyncStorage — native SharedPreferences is the source of truth.
+    // Update the base reference so the UI stays correct between sessions.
+    nativeBaseSteps.current = nativeBaseSteps.current + liveSteps;
     setLiveSteps(0);
     setIsCounterRunning(false);
   };
@@ -571,9 +597,63 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
     persist(STORAGE_KEYS.WEIGHT_HISTORY, []);
   };
 
+  const scheduleDailyReminders = async () => {
+    // Clear existing
+    await Notifications.cancelAllScheduledNotificationsAsync();
+
+    // Water reminders (9am, 1pm, 5pm)
+    const waterTimes = [9, 13, 17];
+    for (const hour of waterTimes) {
+      await Notifications.scheduleNotificationAsync({
+        content: {
+          title: "💧 Time to hydrate!",
+          body: "Drink a glass of water to stay healthy.",
+        },
+        trigger: {
+          type: Notifications.SchedulableTriggerInputTypes.DAILY,
+          hour: hour,
+          minute: 0,
+        },
+      });
+    }
+
+    // Workout reminder (6pm)
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: "🏃 Workout Time!",
+        body: "Time for your daily workout.",
+      },
+      trigger: {
+        type: Notifications.SchedulableTriggerInputTypes.DAILY,
+        hour: 18,
+        minute: 0,
+      },
+    });
+  };
+
+  const toggleReminders = async (enabled: boolean) => {
+    if (enabled) {
+      const { status: existingStatus } = await Notifications.getPermissionsAsync();
+      let finalStatus = existingStatus;
+      if (existingStatus !== 'granted') {
+        const { status } = await Notifications.requestPermissionsAsync();
+        finalStatus = status;
+      }
+      if (finalStatus !== 'granted') {
+        Alert.alert('Permission required', 'Please enable notifications in settings to use reminders.');
+        return;
+      }
+      await scheduleDailyReminders();
+    } else {
+      await Notifications.cancelAllScheduledNotificationsAsync();
+    }
+    setRemindersEnabledState(enabled);
+    persist(STORAGE_KEYS.REMINDERS_ENABLED, enabled);
+  };
+
   const resetAllData = () => {
     stopSensor();
-    sessionBaseSteps.current = 0;
+    nativeBaseSteps.current = 0;
     setLiveSteps(0);
 
     // Clear all persisted data
@@ -611,6 +691,8 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
         isCounterRunning,
         liveStepsToday,
         isLoaded,
+        remindersEnabled,
+        toggleReminders,
         addSteps,
         updateSteps,
         deleteSteps,

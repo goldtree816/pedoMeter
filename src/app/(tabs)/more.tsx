@@ -60,10 +60,11 @@ export default function MoreScreen() {
     setWeight,
     setDistanceUnit,
     resetAllData,
+    remindersEnabled,
+    toggleReminders,
   } = useSettings();
 
   const [splashEnabled, setSplashEnabled] = useState(true);
-  const [reminderOn, setReminderOn] = useState(false);
 
   const handleStepGoal = () => {
     Alert.prompt(
@@ -262,13 +263,13 @@ export default function MoreScreen() {
             sublabel="Every day"
             rightContent={
               <View style={styles.valueRow}>
-                <Text style={[styles.valueText, !reminderOn && { color: COLORS.textSecondary }]}>
-                  {reminderOn ? 'On' : 'Off'}
+                <Text style={[styles.valueText, !remindersEnabled && { color: COLORS.textSecondary }]}>
+                  {remindersEnabled ? 'On' : 'Off'}
                 </Text>
                 <MaterialCommunityIcons name="menu-down" size={20} color={COLORS.greenAccent} />
               </View>
             }
-            onPress={() => setReminderOn((v) => !v)}
+            onPress={() => toggleReminders(!remindersEnabled)}
           />
 
           <Divider />
