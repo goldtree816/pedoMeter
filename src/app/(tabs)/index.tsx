@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { View, StyleSheet } from 'react-native';
+import { Platform, View, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
+import { BannerAd, BannerAdSize } from 'react-native-google-mobile-ads';
 import { COLORS } from '../../constants/theme';
 import TopTabsHeader, { SubTab } from '../../components/TopTabsHeader';
 import TodayDashboard from '../../components/TodayDashboard';
@@ -43,6 +44,18 @@ export default function DashboardScreen() {
       <View style={styles.content}>
         {renderSubView()}
       </View>
+
+      {Platform.OS === 'android' && (
+        <View style={styles.adContainer}>
+          <BannerAd
+            unitId="ca-app-pub-6741963315615698/6978203749"
+            size={BannerAdSize.BANNER}
+            onAdFailedToLoad={(error) => {
+              console.warn('[AdMob] Banner failed to load', error);
+            }}
+          />
+        </View>
+      )}
     </SafeAreaView>
   );
 }
@@ -54,5 +67,11 @@ const styles = StyleSheet.create({
   },
   content: {
     flex: 1,
+  },
+  adContainer: {
+    alignItems: 'center',
+    backgroundColor: COLORS.background,
+    minHeight: 50,
+    paddingVertical: 4,
   },
 });
